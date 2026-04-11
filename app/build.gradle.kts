@@ -46,6 +46,10 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     
+    // Explicitly using implementation for ui-tooling to ensure it is available to the IDE's Layout Preview renderer.
+    // This resolves the ClassNotFoundException for ComposeViewAdapter.
+    implementation(libs.androidx.compose.ui.tooling)
+
     // Google Maps & Location
     implementation(libs.maps.compose)
     implementation(libs.play.services.maps)
@@ -56,6 +60,5 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-    debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

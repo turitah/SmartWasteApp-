@@ -1,8 +1,12 @@
 package com.example.smartwaste.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -22,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -30,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
@@ -47,45 +53,43 @@ enum class SmartWasteScreen {
 fun SmartWasteApp() {
     var currentScreen by remember { mutableStateOf(SmartWasteScreen.Welcome) }
 
-    SmartWasteTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color(0xFFF5F5F5)
-        ) {
-            when (currentScreen) {
-                SmartWasteScreen.Welcome -> WelcomeScreen(
-                    onLogin = { currentScreen = SmartWasteScreen.Login },
-                    onRegister = { currentScreen = SmartWasteScreen.Register }
-                )
-                SmartWasteScreen.Login -> LoginScreen(
-                    onLoginSuccess = { currentScreen = SmartWasteScreen.Home },
-                    onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
-                )
-                SmartWasteScreen.Register -> RegisterScreen(
-                    onRegisterSuccess = { currentScreen = SmartWasteScreen.Home },
-                    onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
-                )
-                SmartWasteScreen.Home -> HomeScreen(
-                    onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue },
-                    onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
-                    onViewSchedule = { currentScreen = SmartWasteScreen.History },
-                    onViewTips = { currentScreen = SmartWasteScreen.Tips },
-                    onLogout = { currentScreen = SmartWasteScreen.Welcome }
-                )
-                SmartWasteScreen.ReportIssue -> ReportIssueScreen(
-                    onBack = { currentScreen = SmartWasteScreen.Home },
-                    onSubmit = { currentScreen = SmartWasteScreen.Home }
-                )
-                SmartWasteScreen.Rewards -> RewardsScreen(
-                    onBack = { currentScreen = SmartWasteScreen.Home }
-                )
-                SmartWasteScreen.History -> HistoryScreen(
-                    onBack = { currentScreen = SmartWasteScreen.Home }
-                )
-                SmartWasteScreen.Tips -> TipsScreen(
-                    onBack = { currentScreen = SmartWasteScreen.Home }
-                )
-            }
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color(0xFFF5F5F5)
+    ) {
+        when (currentScreen) {
+            SmartWasteScreen.Welcome -> WelcomeScreen(
+                onLogin = { currentScreen = SmartWasteScreen.Login },
+                onRegister = { currentScreen = SmartWasteScreen.Register }
+            )
+            SmartWasteScreen.Login -> LoginScreen(
+                onLoginSuccess = { currentScreen = SmartWasteScreen.Home },
+                onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
+            )
+            SmartWasteScreen.Register -> RegisterScreen(
+                onRegisterSuccess = { currentScreen = SmartWasteScreen.Home },
+                onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
+            )
+            SmartWasteScreen.Home -> HomeScreen(
+                onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue },
+                onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
+                onViewSchedule = { currentScreen = SmartWasteScreen.History },
+                onViewTips = { currentScreen = SmartWasteScreen.Tips },
+                onLogout = { currentScreen = SmartWasteScreen.Welcome }
+            )
+            SmartWasteScreen.ReportIssue -> ReportIssueScreen(
+                onBack = { currentScreen = SmartWasteScreen.Home },
+                onSubmit = { currentScreen = SmartWasteScreen.Home }
+            )
+            SmartWasteScreen.Rewards -> RewardsScreen(
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
+            SmartWasteScreen.History -> HistoryScreen(
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
+            SmartWasteScreen.Tips -> TipsScreen(
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
         }
     }
 }
@@ -223,6 +227,27 @@ fun HomeScreen(
         position = CameraPosition.fromLatLngZoom(kampala, 14f)
     }
 
+    val context = LocalContext.current
+    var locationPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        locationPermissionGranted = permissions.values.all { it }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!locationPermissionGranted) {
+            permissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        }
+    }
+
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
@@ -294,8 +319,8 @@ fun HomeScreen(
                     GoogleMap(
                         modifier = Modifier.fillMaxSize(),
                         cameraPositionState = cameraPositionState,
-                        properties = MapProperties(isMyLocationEnabled = true),
-                        uiSettings = MapUiSettings(myLocationButtonEnabled = true)
+                        properties = MapProperties(isMyLocationEnabled = locationPermissionGranted),
+                        uiSettings = MapUiSettings(myLocationButtonEnabled = locationPermissionGranted)
                     ) {
                         Marker(
                             state = rememberMarkerState(position = kampala),
@@ -327,9 +352,9 @@ fun HomeScreen(
                         shadowElevation = 4.dp
                     ) {
                         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.GpsFixed, null, tint = GreenPrimary, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.GpsFixed, null, tint = if (locationPermissionGranted) GreenPrimary else Color.Gray, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text(if (showBins) "Showing Nearby Bins" else "GPS Active", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(if (showBins) "Showing Nearby Bins" else if (locationPermissionGranted) "GPS Active" else "Location Disabled", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -420,12 +445,21 @@ fun ReportIssueScreen(onBack: () -> Unit, onSubmit: () -> Unit) {
     var location by remember { mutableStateOf("Current Location: 123 Kampala St") }
     var description by remember { mutableStateOf("") }
     var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showImageSourceDialog by remember { mutableStateOf(false) }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         capturedImageUri = uri
+        capturedBitmap = null
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        capturedBitmap = bitmap
+        capturedImageUri = null
     }
 
     if (showImageSourceDialog) {
@@ -442,7 +476,7 @@ fun ReportIssueScreen(onBack: () -> Unit, onSubmit: () -> Unit) {
             dismissButton = {
                 TextButton(onClick = {
                     showImageSourceDialog = false
-                    galleryLauncher.launch("image/*") 
+                    cameraLauncher.launch()
                 }) { Text("Camera") }
             }
         )
@@ -474,7 +508,7 @@ fun ReportIssueScreen(onBack: () -> Unit, onSubmit: () -> Unit) {
                 shape = RoundedCornerShape(8.dp), color = Color.White, border = CardDefaults.outlinedCardBorder()
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    if (capturedImageUri != null) {
+                    if (capturedImageUri != null || capturedBitmap != null) {
                         Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(48.dp), tint = GreenPrimary)
                         Text("Photo Selected", color = GreenPrimary)
                     } else {
@@ -653,4 +687,8 @@ fun ScheduleItem(time: String, type: String, status: String) {
 
 @Preview(showBackground = true)
 @Composable
-fun DashboardPreview() { SmartWasteApp() }
+fun DashboardPreview() { 
+    SmartWasteTheme {
+        SmartWasteApp() 
+    }
+}
