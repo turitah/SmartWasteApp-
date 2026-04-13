@@ -46,12 +46,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class SmartWasteScreen {
-    Welcome, Login, Register, Home, ReportIssue, Rewards, History, Tips
+    Welcome, Login, Register, Home, ReportIssue, Rewards, History, Tips, AdminDashboard
 }
+
+// Admin Configuration - Change these as needed
+const val ADMIN_SECRET_KEY = "SW-ADMIN-2020"
+const val ADMIN_PASSWORD = "admin123"
+
+data class User(
+    val email: String,
+    val fullName: String,
+    val isAdmin: Boolean = false
+)
 
 @Composable
 fun SmartWasteApp() {
     var currentScreen by remember { mutableStateOf(SmartWasteScreen.Welcome) }
+    var currentUser by remember { mutableStateOf<User?>(null) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -63,11 +74,25 @@ fun SmartWasteApp() {
                 onRegister = { currentScreen = SmartWasteScreen.Register }
             )
             SmartWasteScreen.Login -> LoginScreen(
-                onLoginSuccess = { currentScreen = SmartWasteScreen.Home },
+                onLoginSuccess = { email, password -> 
+                    // To make it easy, we check if the user is logging in with admin credentials
+                    val isUserAdmin = (email == "admin@smartwaste.com" && password == ADMIN_PASSWORD) || 
+                                     (email == "admin" && password == ADMIN_PASSWORD)
+                    
+                    currentUser = User(
+                        email = email, 
+                        fullName = if (isUserAdmin) "Admin User" else "Standard User", 
+                        isAdmin = isUserAdmin
+                    )
+                    currentScreen = SmartWasteScreen.Home 
+                },
                 onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
             )
             SmartWasteScreen.Register -> RegisterScreen(
-                onRegisterSuccess = { currentScreen = SmartWasteScreen.Home },
+                onRegisterSuccess = { user -> 
+                    currentUser = user
+                    currentScreen = SmartWasteScreen.Home 
+                },
                 onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
             )
             SmartWasteScreen.Home -> HomeScreen(
@@ -75,7 +100,12 @@ fun SmartWasteApp() {
                 onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
                 onViewSchedule = { currentScreen = SmartWasteScreen.History },
                 onViewTips = { currentScreen = SmartWasteScreen.Tips },
-                onLogout = { currentScreen = SmartWasteScreen.Welcome }
+                onLogout = { 
+                    currentUser = null
+                    currentScreen = SmartWasteScreen.Welcome 
+                },
+                onAdminAccess = { currentScreen = SmartWasteScreen.AdminDashboard },
+                isAdmin = currentUser?.isAdmin ?: false
             )
             SmartWasteScreen.ReportIssue -> ReportIssueScreen(
                 onBack = { currentScreen = SmartWasteScreen.Home },
@@ -89,6 +119,9 @@ fun SmartWasteApp() {
             )
             SmartWasteScreen.Tips -> TipsScreen(
                 onBack = { currentScreen = SmartWasteScreen.Home }
+            )
+            SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(
+                onBack = { currentScreen = SmartWasteScreen.Welcome }
             )
         }
     }
@@ -125,7 +158,7 @@ fun WelcomeScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
 }
 
 @Composable
-fun LoginScreen(onLoginSuccess: () -> Unit, onNavigateToRegister: () -> Unit) {
+fun LoginScreen(onLoginSuccess: (String, String) -> Unit, onNavigateToRegister: () -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
@@ -143,7 +176,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit, onNavigateToRegister: () -> Unit) {
         AuthTextField(value = password, onValueChange = { password = it }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
         Spacer(Modifier.height(32.dp))
         Button(
-            onClick = { scope.launch { isLoading = true; delay(1000); isLoading = false; onLoginSuccess() } },
+            onClick = { scope.launch { isLoading = true; delay(1000); isLoading = false; onLoginSuccess(email, password) } },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
             shape = RoundedCornerShape(12.dp)
@@ -157,11 +190,14 @@ fun LoginScreen(onLoginSuccess: () -> Unit, onNavigateToRegister: () -> Unit) {
 }
 
 @Composable
-fun RegisterScreen(onRegisterSuccess: () -> Unit, onNavigateToLogin: () -> Unit) {
+fun RegisterScreen(onRegisterSuccess: (User) -> Unit, onNavigateToLogin: () -> Unit) {
     var fullName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var isAdminRegistration by remember { mutableStateOf(false) }
+    var adminKey by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
+    var showError by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -176,9 +212,50 @@ fun RegisterScreen(onRegisterSuccess: () -> Unit, onNavigateToLogin: () -> Unit)
         AuthTextField(value = email, onValueChange = { email = it }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
         AuthTextField(value = password, onValueChange = { password = it }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
+        
+        Spacer(Modifier.height(16.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().clickable { isAdminRegistration = !isAdminRegistration }
+        ) {
+            Checkbox(checked = isAdminRegistration, onCheckedChange = { isAdminRegistration = it })
+            Text("Register as Admin", color = GreenDark, fontWeight = FontWeight.Medium)
+        }
+
+        if (isAdminRegistration) {
+            Spacer(Modifier.height(8.dp))
+            AuthTextField(
+                value = adminKey, 
+                onValueChange = { adminKey = it; showError = false }, 
+                label = "Admin Secret Key", 
+                icon = Icons.Default.VpnKey,
+                isPassword = true
+            )
+            Text(
+                "Tip: Use '$ADMIN_SECRET_KEY' for testing", 
+                color = GreenPrimary.copy(alpha = 0.7f), 
+                fontSize = 10.sp, 
+                modifier = Modifier.align(Alignment.Start).padding(start = 4.dp)
+            )
+            if (showError) {
+                Text("Invalid Admin Key", color = Color.Red, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
+
         Spacer(Modifier.height(32.dp))
         Button(
-            onClick = { scope.launch { isLoading = true; delay(1000); isLoading = false; onRegisterSuccess() } },
+            onClick = { 
+                scope.launch { 
+                    if (isAdminRegistration && adminKey != ADMIN_SECRET_KEY) {
+                        showError = true
+                        return@launch
+                    }
+                    isLoading = true; 
+                    delay(1000); 
+                    isLoading = false; 
+                    onRegisterSuccess(User(email, fullName, isAdminRegistration)) 
+                } 
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
             shape = RoundedCornerShape(12.dp)
@@ -218,9 +295,13 @@ fun HomeScreen(
     onViewRewards: () -> Unit,
     onViewSchedule: () -> Unit,
     onViewTips: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onAdminAccess: () -> Unit,
+    isAdmin: Boolean = false
 ) {
     var showBins by remember { mutableStateOf(false) }
+    var showAdminLogin by remember { mutableStateOf(false) }
+    var showDeniedDialog by remember { mutableStateOf(false) }
     val kampala = LatLng(0.3476, 32.5825)
     
     val cameraPositionState = rememberCameraPositionState {
@@ -308,7 +389,34 @@ fun HomeScreen(
                             Icon(Icons.Default.Menu, contentDescription = null, tint = Color.White)
                         }
                     },
-                    actions = { IconButton(onClick = {}) { Icon(Icons.Default.Notifications, contentDescription = null, tint = Color.White) } },
+                    actions = {
+                        var showMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White)
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Admin Access") },
+                                onClick = {
+                                    showMenu = false
+                                    if (isAdmin) {
+                                        onAdminAccess() // Access granted immediately for admin users
+                                    } else {
+                                        showDeniedDialog = true
+                                    }
+                                },
+                                leadingIcon = { Icon(Icons.Default.AdminPanelSettings, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Notifications") },
+                                onClick = { showMenu = false },
+                                leadingIcon = { Icon(Icons.Default.Notifications, null) }
+                            )
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)
                 )
             }
@@ -407,6 +515,63 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showDeniedDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeniedDialog = false },
+            title = { Text("Access Denied") },
+            text = { Text("Only registered admins can access this feature. Please register as an admin using the secret key.") },
+            confirmButton = {
+                Button(onClick = { showDeniedDialog = false }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (showAdminLogin) {
+        var adminPassword by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showAdminLogin = false },
+            title = { Text("Admin Authentication") },
+            text = {
+                Column {
+                    Text("Please enter the admin password to proceed.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = adminPassword,
+                        onValueChange = { adminPassword = it; error = false },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        isError = error,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (error) {
+                        Text("Incorrect password", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (adminPassword == ADMIN_PASSWORD) {
+                        showAdminLogin = false
+                        onAdminAccess()
+                    } else {
+                        error = true
+                    }
+                }) {
+                    Text("Login")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdminLogin = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
