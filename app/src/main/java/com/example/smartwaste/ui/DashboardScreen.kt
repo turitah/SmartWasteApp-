@@ -36,6 +36,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.smartwaste.admin.AdminDashboardScreen
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
@@ -60,7 +61,7 @@ data class User(
 )
 
 @Composable
-fun SmartWasteApp() {
+fun SmartWasteApp(onLogoutRequest: () -> Unit = {}) {
     var currentScreen by remember { mutableStateOf(SmartWasteScreen.Welcome) }
     var currentUser by remember { mutableStateOf<User?>(null) }
 
@@ -103,6 +104,7 @@ fun SmartWasteApp() {
                 onLogout = { 
                     currentUser = null
                     currentScreen = SmartWasteScreen.Welcome 
+                    onLogoutRequest()
                 },
                 onAdminAccess = { currentScreen = SmartWasteScreen.AdminDashboard },
                 isAdmin = currentUser?.isAdmin ?: false
@@ -121,7 +123,7 @@ fun SmartWasteApp() {
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(
-                onBack = { currentScreen = SmartWasteScreen.Welcome }
+                onLogout = { currentScreen = SmartWasteScreen.Welcome }
             )
         }
     }
