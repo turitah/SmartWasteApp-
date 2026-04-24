@@ -47,7 +47,11 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             else -> {
-                                SmartWasteApp(onLogoutRequest = { currentEmail = null })
+                                // PASS THE EMAIL TO SMARTWASTEAPP
+                                SmartWasteApp(
+                                    initialEmail = email,
+                                    onLogoutRequest = { currentEmail = null }
+                                )
                             }
                         }
                     }

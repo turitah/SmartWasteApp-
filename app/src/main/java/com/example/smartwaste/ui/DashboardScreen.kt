@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -78,7 +79,7 @@ fun SmartWasteApp(initialEmail: String? = null, onLogoutRequest: () -> Unit = {}
         mutableStateOf(if (initialEmail != null) SmartWasteScreen.Home else SmartWasteScreen.Welcome) 
     }
     var currentUser by remember { 
-        mutableStateOf(initialEmail?.let { User(it, it.split("@")[0].replaceFirstChar { c -> c.uppercase() }) }) 
+        mutableStateOf(initialEmail?.let { User(it, it.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
     }
 
     Surface(
@@ -299,7 +300,7 @@ fun HomeScreen(userName: String, onReportIssue: () -> Unit, onViewRewards: () ->
 
             Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatCard("Collected", "24 kg", Icons.Default.Delete, Modifier.weight(1f))
-                StatCard("Impact", "85%", Icons.Default.TrendingUp, Modifier.weight(1f))
+                StatCard("Impact", "85%", Icons.AutoMirrored.Filled.TrendingUp, Modifier.weight(1f))
             }
 
             Text("Service Areas Near You", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
