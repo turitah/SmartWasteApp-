@@ -12,7 +12,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.smartwaste.admin.AdminDashboardScreen
 import com.example.smartwaste.driver.DriverDashboardScreen
 import com.example.smartwaste.driver.DriverViewModel
-import com.example.smartwaste.ui.MainLoginScreen
 import com.example.smartwaste.ui.SmartWasteApp
 import com.example.smartwaste.ui.theme.SmartWasteTheme
 
@@ -28,9 +27,11 @@ class MainActivity : ComponentActivity() {
                     var currentEmail by remember { mutableStateOf<String?>(null) }
                     
                     if (currentEmail == null) {
-                        MainLoginScreen(onLoginSuccess = { email ->
-                            currentEmail = email
-                        })
+                        // Directly show SmartWasteApp which now starts at the WelcomeScreen (Register/Login options)
+                        SmartWasteApp(
+                            onUserLoggedIn = { email: String -> currentEmail = email },
+                            onLogoutRequest = { currentEmail = null }
+                        )
                     } else {
                         val email = currentEmail!!
                         when {
@@ -47,7 +48,6 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             else -> {
-                                // PASS THE EMAIL TO SMARTWASTEAPP
                                 SmartWasteApp(
                                     initialEmail = email,
                                     onLogoutRequest = { currentEmail = null }
