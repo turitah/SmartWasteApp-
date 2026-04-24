@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "28420935446",
+    "firebase_url": "https://smartwaste-bcdbb-default-rtdb.firebaseio.com",
+    "project_id": "smartwaste-bcdbb",
+    "storage_bucket": "smartwaste-bcdbb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:28420935446:android:2041c27c464895b4eb4a37",
+        "android_client_info": {
+          "package_name": "com.example.smartwaste"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCSHjeo84b0j_ngvTbAd0H351wPRM5lSF8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,5 +1,6 @@
 package com.example.smartwaste.ui
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -23,9 +24,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.smartwaste.auth.FirebaseAuthService
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -33,7 +34,9 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val authService = remember { FirebaseAuthService() }
 
     Column(
         modifier = Modifier
@@ -54,7 +57,7 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
         
         LoginTextField(
             value = email,
-            onValueChange = { email = it },
+            onValueChange = { email = it; errorMessage = "" },
             label = "Email",
             icon = Icons.Default.Email
         )
@@ -62,27 +65,43 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
         
         LoginTextField(
             value = password,
-            onValueChange = { password = it },
+            onValueChange = { password = it; errorMessage = "" },
             label = "Password",
             icon = Icons.Default.Lock,
             isPassword = true
         )
+        
+        if (errorMessage.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        }
+        
         Spacer(Modifier.height(32.dp))
         
         Button(
             onClick = {
                 scope.launch {
                     isLoading = true
-                    delay(1000)
-                    isLoading = false
-                    onLoginSuccess(email)
+                    errorMessage = ""
+                    val result = authService.login(email, password)
+                    result.onSuccess { user ->
+                        isLoading = false
+                        Log.d("MainLoginScreen", "Login successful for: ${user.email}")
+                        onLoginSuccess(email)
+                    }
+                    result.onFailure { exception ->
+                        isLoading = false
+                        errorMessage = exception.message ?: "Login failed"
+                        Log.e("MainLoginScreen", "Login error: ${exception.message}")
+                    }
                 }
             },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(12.dp),
+            enabled = !isLoading && email.isNotEmpty() && password.isNotEmpty()
         ) {
             if (isLoading) {
                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))

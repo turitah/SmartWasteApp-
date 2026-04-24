@@ -1,12 +1,15 @@
 package com.example.smartwaste.driver
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 data class PickupTask(
     val id: Int,
@@ -64,8 +67,10 @@ class DriverViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _driverName = MutableStateFlow("Joy")
+    private val _driverName = MutableStateFlow("Joel Niwamanya")
     val driverName: StateFlow<String> = _driverName.asStateFlow()
+
+    private val db = FirebaseFirestore.getInstance()
 
     init {
         loadTodayPickups()
@@ -165,17 +170,32 @@ class DriverViewModel : ViewModel() {
 
     fun reportIssue(issueType: String, taskId: Int, reason: String) {
         viewModelScope.launch {
-            // In real app, send to backend
-            if (issueType == "missed_pickup") {
-                val updatedTasks = _tasks.value.map { task ->
-                    if (task.id == taskId) task.copy(isMissed = true, missedReason = reason) else task
+            try {
+                // Update local state
+                if (issueType == "missed_pickup") {
+                    val updatedTasks = _tasks.value.map { task ->
+                        if (task.id == taskId) task.copy(isMissed = true, missedReason = reason) else task
+                    }
+                    _tasks.value = updatedTasks
                 }
-                _tasks.value = updatedTasks
-            }
-            updateStats()
+                updateStats()
 
-            // Add notification for admin (simulated)
-            println("Report sent: $issueType for task $taskId - Reason: $reason")
+                // Send to Firestore for Admin to see
+                val task = _tasks.value.find { it.id == taskId }
+                val report = hashMapOf(
+                    "userEmail" to "Driver: ${_driverName.value}",
+                    "issueType" to issueType.replace("_", " ").replaceFirstChar { it.uppercase() },
+                    "location" to (task?.address ?: "Unknown"),
+                    "description" to "Task #$taskId: $reason",
+                    "timestamp" to com.google.firebase.Timestamp.now(),
+                    "status" to "Pending"
+                )
+                
+                db.collection("reports").add(report).await()
+                Log.d("DriverViewModel", "Report sent to Firestore: $issueType")
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Error reporting issue", e)
+            }
         }
     }
 

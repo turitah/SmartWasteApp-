@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Exclude dependencies
+node_modules/
+package-lock.json

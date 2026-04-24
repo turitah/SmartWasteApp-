@@ -1,6 +1,7 @@
 package com.example.smartwaste.admin
 
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -12,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,9 +32,12 @@ import coil.compose.AsyncImage
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+import kotlinx.coroutines.launch
 
 enum class AdminSubScreen {
-    Dashboard, Drivers, MapView, Schedule, Reports, Bins
+    Dashboard, Drivers, MapView, Schedule, Reports, Bins, Notifications
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,6 +50,56 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
     var editingSchedule by remember { mutableStateOf<ScheduleData?>(null) }
     var editingDriver by remember { mutableStateOf<Driver?>(null) }
     var showMenu by remember { mutableStateOf(false) }
+
+    // Firestore reports state
+    val db = FirebaseFirestore.getInstance()
+    var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
+    var unreadReportCount by remember { mutableIntStateOf(0) }
+    var lastKnownReportCount by remember { mutableIntStateOf(-1) }
+    
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        // Removed .orderBy("timestamp") because it requires a manual index in Firebase console.
+        // We'll sort in-memory instead to ensure it works immediately.
+        db.collection("reports")
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) {
+                    Log.e("AdminDashboard", "Firestore listen failed. If this is an index error, check Logcat for the link.", e)
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    Log.d("AdminDashboard", "Fetched ${snapshot.size()} reports")
+                    val reportList = snapshot.documents.map { doc ->
+                        ReportItem(
+                            id = doc.id,
+                            userName = doc.getString("userEmail") ?: "Unknown",
+                            location = doc.getString("location") ?: "Unknown",
+                            description = doc.getString("description") ?: "",
+                            status = doc.getString("status") ?: "Pending",
+                            issueType = doc.getString("issueType") ?: "General",
+                            timestamp = doc.getTimestamp("timestamp")?.seconds ?: 0L
+                        )
+                    }.sortedByDescending { it.timestamp } // Sort in-memory
+                    
+                    // Show notification if new reports arrive
+                    if (lastKnownReportCount != -1 && reportList.size > lastKnownReportCount) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "New user report received!",
+                                duration = SnackbarDuration.Short
+                            )
+                        }
+                    }
+                    
+                    reports = reportList
+                    unreadReportCount = reportList.count { it.status == "Pending" }
+                    lastKnownReportCount = reportList.size
+                }
+            }
+    }
 
     // State for drivers, schedules, and bins
     var drivers by remember {
@@ -81,6 +136,7 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -92,6 +148,7 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                             AdminSubScreen.Schedule -> "Pickup Schedule"
                             AdminSubScreen.Reports -> "User Reports"
                             AdminSubScreen.Bins -> "Manage Bins"
+                            AdminSubScreen.Notifications -> "Admin Notifications"
                         },
                         color = Color.White
                     )
@@ -105,8 +162,16 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                 },
                 actions = {
                     Box {
-                        IconButton(onClick = { showMenu = !showMenu }) {
-                            Icon(Icons.Default.Menu, "Menu", tint = Color.White)
+                        BadgedBox(
+                            badge = {
+                                if (unreadReportCount > 0) {
+                                    Badge { Text(unreadReportCount.toString()) }
+                                }
+                            }
+                        ) {
+                            IconButton(onClick = { showMenu = !showMenu }) {
+                                Icon(Icons.Default.Menu, "Menu", tint = Color.White)
+                            }
                         }
                         DropdownMenu(
                             expanded = showMenu,
@@ -146,12 +211,28 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                                 leadingIcon = { Icon(Icons.Default.Delete, null) }
                             )
                             DropdownMenuItem(
-                                text = { Text("Reports") },
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Reports")
+                                        if (unreadReportCount > 0) {
+                                            Spacer(Modifier.width(8.dp))
+                                            Badge { Text(unreadReportCount.toString()) }
+                                        }
+                                    }
+                                },
                                 onClick = {
                                     currentSubScreen = AdminSubScreen.Reports
                                     showMenu = false
                                 },
                                 leadingIcon = { Icon(Icons.Default.Report, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Notifications") },
+                                onClick = {
+                                    currentSubScreen = AdminSubScreen.Notifications
+                                    showMenu = false
+                                },
+                                leadingIcon = { Icon(Icons.Default.Notifications, null) }
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
@@ -160,7 +241,7 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                                     showMenu = false
                                     onLogout()
                                 },
-                                leadingIcon = { Icon(Icons.Default.Logout, null, tint = Color.Red) }
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color.Red) }
                             )
                         }
                     }
@@ -175,7 +256,8 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                     AdminDashboardOverview(
                         onNavigate = { currentSubScreen = it },
                         drivers = drivers,
-                        bins = bins
+                        bins = bins,
+                        reports = reports
                     )
                 }
                 AdminSubScreen.Drivers -> ManageDriversScreen(drivers, onEditDriver = { editingDriver = it })
@@ -184,14 +266,23 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                     onEditSchedule = { editingSchedule = it }
                 )
                 AdminSubScreen.MapView -> Text("Map View Coming Soon", modifier = Modifier.padding(16.dp))
-                AdminSubScreen.Reports -> ManageReportsScreen(onReportClick = { selectedReport = it })
+                AdminSubScreen.Reports -> ManageReportsScreen(
+                    reports = reports,
+                    onReportClick = { selectedReport = it }
+                )
                 AdminSubScreen.Bins -> ManageBinsScreen(bins)
+                AdminSubScreen.Notifications -> AdminNotificationsScreen(reports)
             }
 
             if (selectedReport != null) {
                 ReportDetailDialog(
                     report = selectedReport!!,
-                    onDismiss = { selectedReport = null }
+                    onDismiss = { selectedReport = null },
+                    onMarkAsResolved = {
+                        db.collection("reports").document(selectedReport!!.id)
+                            .update("status", "Resolved")
+                        selectedReport = null
+                    }
                 )
             }
 
@@ -238,7 +329,8 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
 fun AdminDashboardOverview(
     onNavigate: (AdminSubScreen) -> Unit,
     drivers: List<Driver>,
-    bins: List<BinData>
+    bins: List<BinData>,
+    reports: List<ReportItem>
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -257,6 +349,16 @@ fun AdminDashboardOverview(
         }
 
         item {
+            StatCard(
+                label = "Pending Reports", 
+                value = reports.count { it.status == "Pending" }.toString(), 
+                icon = Icons.Default.Warning, 
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { onNavigate(AdminSubScreen.Reports) }
+            )
+        }
+
+        item {
             QuickActions(onNavigate)
         }
 
@@ -271,9 +373,9 @@ fun AdminDashboardOverview(
 }
 
 @Composable
-fun StatCard(label: String, value: String, icon: ImageVector, modifier: Modifier = Modifier) {
+fun StatCard(label: String, value: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     Card(
-        modifier = modifier,
+        modifier = modifier.clickable { onClick() },
         colors = CardDefaults.cardColors(containerColor = GreenPrimary.copy(alpha = 0.1f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -348,19 +450,27 @@ fun ManageDriversScreen(drivers: List<Driver>, onEditDriver: (Driver) -> Unit) {
 }
 
 @Composable
-fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit) {
+fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onMarkAsResolved: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Report Detail") },
         text = {
             Column {
-                Text("User: ${report.userName}", fontWeight = FontWeight.Bold)
+                Text("Type: ${report.issueType}", fontWeight = FontWeight.Bold, color = GreenDark)
+                Text("User: ${report.userName}", style = MaterialTheme.typography.bodyMedium)
                 Text("Location: ${report.location}")
                 Spacer(Modifier.height(8.dp))
                 Text(report.description)
+                Spacer(Modifier.height(8.dp))
+                Text("Status: ${report.status}", color = if (report.status == "Pending") Color.Red else Color(0xFF4CAF50))
             }
         },
         confirmButton = {
+            if (report.status == "Pending") {
+                Button(onClick = onMarkAsResolved) { Text("Mark Resolved") }
+            }
+        },
+        dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
@@ -453,20 +563,89 @@ fun AddScheduleDialog(
 }
 
 @Composable
-fun ManageReportsScreen(onReportClick: (ReportItem) -> Unit) {
-    val reports = listOf(
-        ReportItem("John Doe", "Acacia Ave", "Full bin"),
-        ReportItem("Alice Smith", "Kiwatule", "Bad smell")
-    )
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        items(reports) { report ->
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { onReportClick(report) }
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(report.userName, fontWeight = FontWeight.Bold)
-                    Text(report.location)
+fun ManageReportsScreen(reports: List<ReportItem>, onReportClick: (ReportItem) -> Unit) {
+    if (reports.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("No reports found", color = Color.Gray)
+        }
+    } else {
+        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(reports) { report ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().clickable { onReportClick(report) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (report.status == "Pending") Color(0xFFFFF3E0) else Color.White
+                    )
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(report.issueType, fontWeight = FontWeight.Bold, color = GreenDark)
+                            if (report.status == "Pending") {
+                                Surface(color = Color.Red, shape = CircleShape) {
+                                    Text("NEW", color = Color.White, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        Text(report.userName, style = MaterialTheme.typography.bodySmall)
+                        Text(report.location, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(4.dp))
+                        Text(report.description, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun AdminNotificationsScreen(reports: List<ReportItem>) {
+    val pendingReports = reports.filter { it.status == "Pending" }
+    
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Text("Recent Activity", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        }
+        
+        if (pendingReports.isEmpty()) {
+            item {
+                Text("No new notifications", color = Color.Gray, modifier = Modifier.padding(16.dp))
+            }
+        } else {
+            items(pendingReports) { report ->
+                NotificationItemCard(
+                    title = "New Report: ${report.issueType}",
+                    message = "${report.userName} reported an issue at ${report.location}",
+                    time = "Just now"
+                )
+            }
+        }
+        
+        item {
+            NotificationItemCard(
+                title = "System Update",
+                message = "The weekly pickup schedule has been generated.",
+                time = "2 hours ago"
+            )
+        }
+    }
+}
+
+@Composable
+fun NotificationItemCard(title: String, message: String, time: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(1.dp)
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = CircleShape, color = GreenPrimary.copy(alpha = 0.1f), modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.Notifications, null, tint = GreenPrimary, modifier = Modifier.padding(8.dp))
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(message, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(time, style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
             }
         }
     }
@@ -524,7 +703,15 @@ fun BinStatusCard(bin: BinData) {
 data class Driver(val name: String, val truck: String, val status: String, val statusColor: Color, val profileImage: String)
 data class BinData(val id: String, val location: String, val fillLevel: Int)
 data class ScheduleData(val date: String, val shift: String, val driverName: String)
-data class ReportItem(val userName: String, val location: String, val description: String)
+data class ReportItem(
+    val id: String = "",
+    val userName: String,
+    val location: String,
+    val description: String,
+    val status: String = "Pending",
+    val issueType: String = "General",
+    val timestamp: Long = 0L
+)
 
 @Preview(showBackground = true)
 @Composable
