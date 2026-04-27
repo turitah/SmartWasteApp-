@@ -32,8 +32,10 @@ import coil.compose.AsyncImage
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.launch
 
 enum class AdminSubScreen {
@@ -51,8 +53,8 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
     var editingDriver by remember { mutableStateOf<Driver?>(null) }
     var showMenu by remember { mutableStateOf(false) }
 
-    // Firestore reports state
-    val db = FirebaseFirestore.getInstance()
+    // Realtime Database reports state
+    val db = FirebaseDatabase.getInstance().reference
     var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
     var unreadReportCount by remember { mutableIntStateOf(0) }
     var lastKnownReportCount by remember { mutableIntStateOf(-1) }
@@ -61,44 +63,44 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        // Removed .orderBy("timestamp") because it requires a manual index in Firebase console.
-        // We'll sort in-memory instead to ensure it works immediately.
-        db.collection("reports")
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e("AdminDashboard", "Firestore listen failed. If this is an index error, check Logcat for the link.", e)
-                    return@addSnapshotListener
-                }
-
-                if (snapshot != null) {
-                    Log.d("AdminDashboard", "Fetched ${snapshot.size()} reports")
-                    val reportList = snapshot.documents.map { doc ->
+        val reportsRef = db.child("reports")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val reportList = mutableListOf<ReportItem>()
+                for (doc in snapshot.children) {
+                    reportList.add(
                         ReportItem(
-                            id = doc.id,
-                            userName = doc.getString("userEmail") ?: "Unknown",
-                            location = doc.getString("location") ?: "Unknown",
-                            description = doc.getString("description") ?: "",
-                            status = doc.getString("status") ?: "Pending",
-                            issueType = doc.getString("issueType") ?: "General",
-                            timestamp = doc.getTimestamp("timestamp")?.seconds ?: 0L
+                            id = doc.key ?: "",
+                            userName = doc.child("userEmail").getValue(String::class.java) ?: "Unknown",
+                            location = doc.child("location").getValue(String::class.java) ?: "Unknown",
+                            description = doc.child("description").getValue(String::class.java) ?: "",
+                            status = doc.child("status").getValue(String::class.java) ?: "Pending",
+                            issueType = doc.child("issueType").getValue(String::class.java) ?: "General",
+                            timestamp = doc.child("timestamp").getValue(Long::class.java) ?: 0L
                         )
-                    }.sortedByDescending { it.timestamp } // Sort in-memory
-                    
-                    // Show notification if new reports arrive
-                    if (lastKnownReportCount != -1 && reportList.size > lastKnownReportCount) {
-                        scope.launch {
-                            snackbarHostState.showSnackbar(
-                                message = "New user report received!",
-                                duration = SnackbarDuration.Short
-                            )
-                        }
-                    }
-                    
-                    reports = reportList
-                    unreadReportCount = reportList.count { it.status == "Pending" }
-                    lastKnownReportCount = reportList.size
+                    )
                 }
+                reportList.sortByDescending { it.timestamp }
+                
+                if (lastKnownReportCount != -1 && reportList.size > lastKnownReportCount) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "New user report received!",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
+                
+                reports = reportList
+                unreadReportCount = reportList.count { it.status == "Pending" }
+                lastKnownReportCount = reportList.size
             }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("AdminDashboard", "Database error: ${error.message}")
+            }
+        }
+        reportsRef.addValueEventListener(listener)
     }
 
     // State for drivers, schedules, and bins
@@ -279,8 +281,7 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                     report = selectedReport!!,
                     onDismiss = { selectedReport = null },
                     onMarkAsResolved = {
-                        db.collection("reports").document(selectedReport!!.id)
-                            .update("status", "Resolved")
+                        db.child("reports").child(selectedReport!!.id).child("status").setValue("Resolved")
                         selectedReport = null
                     }
                 )

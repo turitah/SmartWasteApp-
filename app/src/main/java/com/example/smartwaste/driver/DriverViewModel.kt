@@ -3,7 +3,8 @@ package com.example.smartwaste.driver
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.firestore.FirebaseFirestore
+import com.example.smartwaste.auth.FirebaseAuthService
+import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,14 +68,38 @@ class DriverViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _driverName = MutableStateFlow("Joel Niwamanya")
+    private val _driverName = MutableStateFlow("Driver")
     val driverName: StateFlow<String> = _driverName.asStateFlow()
 
-    private val db = FirebaseFirestore.getInstance()
+    private val db = FirebaseDatabase.getInstance().reference
+    private val authService = FirebaseAuthService()
 
     init {
         loadTodayPickups()
         loadNotifications()
+        loadDriverProfile()
+    }
+
+    private fun loadDriverProfile() {
+        viewModelScope.launch {
+            authService.getCurrentUser()?.let { user ->
+                val profile = authService.getUserProfile(user.uid)
+                _driverName.value = profile?.get("fullName") as? String ?: "Driver"
+            }
+        }
+    }
+
+    fun login(email: String, password: String) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                authService.login(email, password)
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Login failed", e)
+            } finally {
+                _isLoading.value = false
+            }
+        }
     }
 
     fun loadTodayPickups() {
@@ -180,19 +205,19 @@ class DriverViewModel : ViewModel() {
                 }
                 updateStats()
 
-                // Send to Firestore for Admin to see
+                // Send to Realtime Database for Admin to see
                 val task = _tasks.value.find { it.id == taskId }
                 val report = hashMapOf(
                     "userEmail" to "Driver: ${_driverName.value}",
                     "issueType" to issueType.replace("_", " ").replaceFirstChar { it.uppercase() },
                     "location" to (task?.address ?: "Unknown"),
                     "description" to "Task #$taskId: $reason",
-                    "timestamp" to com.google.firebase.Timestamp.now(),
+                    "timestamp" to System.currentTimeMillis(),
                     "status" to "Pending"
                 )
                 
-                db.collection("reports").add(report).await()
-                Log.d("DriverViewModel", "Report sent to Firestore: $issueType")
+                db.child("reports").push().setValue(report).await()
+                Log.d("DriverViewModel", "Report sent to Realtime Database: $issueType")
             } catch (e: Exception) {
                 Log.e("DriverViewModel", "Error reporting issue", e)
             }
@@ -226,9 +251,8 @@ class DriverViewModel : ViewModel() {
         )
     }
 
-    fun login(email: String, password: String = "") {
-        // Implementation for role-based login logic if needed
-        println("Driver logged in with email: $email")
+    fun logout() {
+        authService.logout()
     }
 
     fun getDailyEarnings(): Double {

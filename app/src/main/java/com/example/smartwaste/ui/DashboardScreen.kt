@@ -36,12 +36,14 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.smartwaste.admin.AdminDashboardScreen
+import com.example.smartwaste.auth.FirebaseAuthService
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.database.FirebaseDatabase
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -65,7 +67,10 @@ const val ADMIN_PASSWORD = "admin123"
 data class User(
     val email: String,
     val fullName: String,
-    val isAdmin: Boolean = false
+    val isAdmin: Boolean = false,
+    val wasteCollected: Double = 0.0,
+    val impact: Int = 0,
+    val ecoPoints: Int = 0
 )
 
 /**
@@ -73,13 +78,35 @@ data class User(
  * SmartWasteApp acts as the single source of truth for the app state.
  */
 @Composable
-fun SmartWasteApp(initialEmail: String? = null, onLogoutRequest: () -> Unit = {}) {
+fun SmartWasteApp(
+    initialEmail: String? = null, 
+    onUserLoggedIn: (String) -> Unit = {},
+    onLogoutRequest: () -> Unit = {}
+) {
     // State management (Source of Truth)
     var currentScreen by remember { 
         mutableStateOf(if (initialEmail != null) SmartWasteScreen.Home else SmartWasteScreen.Welcome) 
     }
     var currentUser by remember { 
         mutableStateOf(initialEmail?.let { User(it, it.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
+    }
+    val authService = remember { FirebaseAuthService() }
+
+    // Fetch full user profile from Database when logged in
+    LaunchedEffect(currentUser?.email) {
+        if (currentUser != null) {
+            authService.getCurrentUser()?.uid?.let { uid ->
+                val profile = authService.getUserProfile(uid)
+                if (profile != null) {
+                    currentUser = currentUser?.copy(
+                        fullName = profile["fullName"] as? String ?: currentUser!!.fullName,
+                        wasteCollected = (profile["wasteCollected"] as? Number)?.toDouble() ?: 0.0,
+                        impact = (profile["impact"] as? Number)?.toInt() ?: 0,
+                        ecoPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
+                    )
+                }
+            }
+        }
     }
 
     Surface(
@@ -92,6 +119,7 @@ fun SmartWasteApp(initialEmail: String? = null, onLogoutRequest: () -> Unit = {}
                 onRegister = { currentScreen = SmartWasteScreen.Register }
             )
             SmartWasteScreen.Login -> LoginScreen(
+                authService = authService,
                 onLoginSuccess = { email, password, name -> 
                     val isUserAdmin = (email == "admin@smartwaste.com" && password == ADMIN_PASSWORD) || 
                                      (email == "admin" && password == ADMIN_PASSWORD)
@@ -102,24 +130,31 @@ fun SmartWasteApp(initialEmail: String? = null, onLogoutRequest: () -> Unit = {}
                                      else email.split("@")[0].replaceFirstChar { it.uppercase() }
 
                     currentUser = User(email = email, fullName = displayName, isAdmin = isUserAdmin)
+                    
+                    // Critical: Notify MainActivity so it can switch to Driver/Admin dashboards if needed
+                    onUserLoggedIn(email)
+                    
                     currentScreen = SmartWasteScreen.Home 
                 },
                 onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
             )
             SmartWasteScreen.Register -> RegisterScreen(
-                onRegisterSuccess = { user -> 
+                authService = authService,
+                onRegisterSuccess = { user, email -> 
                     currentUser = user
+                    onUserLoggedIn(email)
                     currentScreen = SmartWasteScreen.Home 
                 },
                 onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
             )
             SmartWasteScreen.Home -> HomeScreen(
-                userName = currentUser?.fullName ?: "User", // State flows DOWN
+                user = currentUser ?: User("", "User"), // State flows DOWN
                 onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue }, // Event flows UP
                 onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
                 onViewSchedule = { currentScreen = SmartWasteScreen.History },
                 onViewTips = { currentScreen = SmartWasteScreen.Tips },
                 onLogout = { 
+                    authService.logout()
                     currentUser = null
                     currentScreen = SmartWasteScreen.Welcome 
                     onLogoutRequest()
@@ -128,14 +163,25 @@ fun SmartWasteApp(initialEmail: String? = null, onLogoutRequest: () -> Unit = {}
                 isAdmin = currentUser?.isAdmin ?: false
             )
             SmartWasteScreen.ReportIssue -> ReportIssueScreen(
+                authService = authService,
                 userEmail = currentUser?.email ?: "anonymous",
                 onBack = { currentScreen = SmartWasteScreen.Home },
-                onSubmit = { currentScreen = SmartWasteScreen.Home }
+                onSubmit = { 
+                    // Refresh current user state from DB after reporting an issue
+                    currentScreen = SmartWasteScreen.Home 
+                }
             )
-            SmartWasteScreen.Rewards -> RewardsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
+            SmartWasteScreen.Rewards -> RewardsScreen(
+                ecoPoints = currentUser?.ecoPoints ?: 0,
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
             SmartWasteScreen.History -> HistoryScreen(onBack = { currentScreen = SmartWasteScreen.Home })
             SmartWasteScreen.Tips -> TipsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
-            SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(onLogout = { currentScreen = SmartWasteScreen.Welcome })
+            SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(onLogout = { 
+                authService.logout()
+                currentScreen = SmartWasteScreen.Welcome 
+                onLogoutRequest()
+            })
         }
     }
 }
@@ -163,11 +209,12 @@ fun WelcomeScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
 }
 
 @Composable
-fun LoginScreen(onLoginSuccess: (String, String, String) -> Unit, onNavigateToRegister: () -> Unit) {
+fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, String, String) -> Unit, onNavigateToRegister: () -> Unit) {
     var email by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -179,15 +226,39 @@ fun LoginScreen(onLoginSuccess: (String, String, String) -> Unit, onNavigateToRe
         Spacer(Modifier.height(48.dp))
         AuthTextField(value = name, onValueChange = { name = it }, label = "Full Name (Optional)", icon = Icons.Default.Person)
         Spacer(Modifier.height(16.dp))
-        AuthTextField(value = email, onValueChange = { email = it }, label = "Email", icon = Icons.Default.Email)
+        AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
-        AuthTextField(value = password, onValueChange = { password = it }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
+        AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
+        
+        if (errorMessage.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        }
+
         Spacer(Modifier.height(32.dp))
         Button(
-            onClick = { scope.launch { isLoading = true; delay(800); isLoading = false; onLoginSuccess(email, password, name) } },
+            onClick = { 
+                scope.launch { 
+                    isLoading = true
+                    errorMessage = ""
+                    try {
+                        val result = authService.login(email, password)
+                        result.onSuccess {
+                            onLoginSuccess(email, password, name)
+                        }.onFailure { e ->
+                            errorMessage = e.message ?: "Login failed"
+                        }
+                    } catch (e: Exception) {
+                        errorMessage = e.message ?: "An unexpected error occurred"
+                    } finally {
+                        isLoading = false
+                    }
+                } 
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(12.dp),
+            enabled = !isLoading && email.isNotEmpty() && password.isNotEmpty()
         ) {
             if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
             else Text("Login", fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -198,14 +269,14 @@ fun LoginScreen(onLoginSuccess: (String, String, String) -> Unit, onNavigateToRe
 }
 
 @Composable
-fun RegisterScreen(onRegisterSuccess: (User) -> Unit, onNavigateToLogin: () -> Unit) {
+fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, String) -> Unit, onNavigateToLogin: () -> Unit) {
     var fullName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isAdminRegistration by remember { mutableStateOf(false) }
     var adminKey by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
-    var showError by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -215,11 +286,11 @@ fun RegisterScreen(onRegisterSuccess: (User) -> Unit, onNavigateToLogin: () -> U
     ) {
         Text("Create Account", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = GreenDark)
         Spacer(Modifier.height(48.dp))
-        AuthTextField(value = fullName, onValueChange = { fullName = it }, label = "Full Name", icon = Icons.Default.Person)
+        AuthTextField(value = fullName, onValueChange = { fullName = it; errorMessage = "" }, label = "Full Name", icon = Icons.Default.Person)
         Spacer(Modifier.height(16.dp))
-        AuthTextField(value = email, onValueChange = { email = it }, label = "Email", icon = Icons.Default.Email)
+        AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
-        AuthTextField(value = password, onValueChange = { password = it }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
+        AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
         
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { isAdminRegistration = !isAdminRegistration }) {
@@ -228,22 +299,43 @@ fun RegisterScreen(onRegisterSuccess: (User) -> Unit, onNavigateToLogin: () -> U
         }
 
         if (isAdminRegistration) {
-            AuthTextField(value = adminKey, onValueChange = { adminKey = it; showError = false }, label = "Admin Secret Key", icon = Icons.Default.VpnKey, isPassword = true)
-            if (showError) Text("Invalid Admin Key", color = Color.Red, fontSize = 12.sp)
+            AuthTextField(value = adminKey, onValueChange = { adminKey = it; errorMessage = "" }, label = "Admin Secret Key", icon = Icons.Default.VpnKey, isPassword = true)
+        }
+
+        if (errorMessage.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
         }
 
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
                 if (isAdminRegistration && adminKey != ADMIN_SECRET_KEY) {
-                    showError = true
+                    errorMessage = "Invalid Admin Key"
                 } else {
-                    scope.launch { isLoading = true; delay(800); isLoading = false; onRegisterSuccess(User(email, fullName, isAdminRegistration)) }
+                    scope.launch { 
+                        isLoading = true
+                        errorMessage = ""
+                        try {
+                            val role = if (isAdminRegistration) "admin" else "user"
+                            val result = authService.register(email, password, fullName, role)
+                            result.onSuccess {
+                                onRegisterSuccess(User(email, fullName, isAdminRegistration), email)
+                            }.onFailure { e ->
+                                errorMessage = e.message ?: "Registration failed"
+                            }
+                        } catch (e: Exception) {
+                            errorMessage = e.message ?: "An unexpected error occurred"
+                        } finally {
+                            isLoading = false
+                        }
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(12.dp),
+            enabled = !isLoading && fullName.isNotEmpty() && email.isNotEmpty() && password.isNotEmpty()
         ) {
             if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
             else Text("Register", fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -271,7 +363,7 @@ fun AuthTextField(value: String, onValueChange: (String) -> Unit, label: String,
 }
 
 @Composable
-fun HomeScreen(userName: String, onReportIssue: () -> Unit, onViewRewards: () -> Unit, onViewSchedule: () -> Unit, onViewTips: () -> Unit, onLogout: () -> Unit, onAdminAccess: () -> Unit, isAdmin: Boolean) {
+fun HomeScreen(user: User, onReportIssue: () -> Unit, onViewRewards: () -> Unit, onViewSchedule: () -> Unit, onViewTips: () -> Unit, onLogout: () -> Unit, onAdminAccess: () -> Unit, isAdmin: Boolean) {
     Scaffold(
         bottomBar = {
             NavigationBar(containerColor = Color.White) {
@@ -286,7 +378,7 @@ fun HomeScreen(userName: String, onReportIssue: () -> Unit, onViewRewards: () ->
             Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Brush.verticalGradient(listOf(GreenDark, GreenPrimary))).padding(24.dp)) {
                 Column(modifier = Modifier.align(Alignment.BottomStart)) {
                     Text("Hello,", color = Color.White.copy(alpha = 0.8f))
-                    Text(userName, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(user.fullName, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = Color.White)
                 }
                 IconButton(onClick = onLogout, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color.White) }
                 if (isAdmin) {
@@ -299,8 +391,8 @@ fun HomeScreen(userName: String, onReportIssue: () -> Unit, onViewRewards: () ->
             }
 
             Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                StatCard("Collected", "24 kg", Icons.Default.Delete, Modifier.weight(1f))
-                StatCard("Impact", "85%", Icons.AutoMirrored.Filled.TrendingUp, Modifier.weight(1f))
+                StatCard("Collected", "${user.wasteCollected} kg", Icons.Default.Delete, Modifier.weight(1f))
+                StatCard("Impact", "${user.impact}%", Icons.AutoMirrored.Filled.TrendingUp, Modifier.weight(1f))
             }
 
             Text("Service Areas Near You", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -347,7 +439,7 @@ fun ActionCard(title: String, desc: String, icon: ImageVector, color: Color, onC
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
+fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
     var selectedIssue by remember { mutableStateOf("Overflowing Bin") }
     var location by remember { mutableStateOf("Current Location: 123 Kampala St") }
     var description by remember { mutableStateOf("") }
@@ -402,17 +494,31 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
                         scope.launch {
                             isSubmitting = true
                             try {
-                                val db = FirebaseFirestore.getInstance()
-                                val report = hashMapOf("userEmail" to userEmail, "issueType" to selectedIssue, "location" to location, "description" to description, "timestamp" to com.google.firebase.Timestamp.now(), "status" to "Pending")
-                                withTimeout(25000) { db.collection("reports").add(report).await() }
-                                Toast.makeText(context, "Report submitted successfully!", Toast.LENGTH_SHORT).show()
-                                isSubmitting = false
+                                val db = FirebaseDatabase.getInstance().reference
+                                val report = hashMapOf("userEmail" to userEmail, "issueType" to selectedIssue, "location" to location, "description" to description, "timestamp" to System.currentTimeMillis(), "status" to "Pending")
+                                withTimeout(25000) { db.child("reports").push().setValue(report).await() }
+                                
+                                // Update user's impact/points for reporting
+                                authService.getCurrentUser()?.uid?.let { uid ->
+                                    val profile = authService.getUserProfile(uid)
+                                    if (profile != null) {
+                                        val currentPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
+                                        val currentImpact = (profile["impact"] as? Number)?.toInt() ?: 0
+                                        db.child("users").child(uid).updateChildren(mapOf(
+                                            "ecoPoints" to currentPoints + 10,
+                                            "impact" to currentImpact + 2
+                                        )).await()
+                                    }
+                                }
+
+                                Toast.makeText(context, "Report submitted successfully! +10 Eco Points!", Toast.LENGTH_SHORT).show()
                                 onSubmit()
                             } catch (e: Exception) {
                                 Log.e("SmartWaste", "Submission failed", e)
-                                isSubmitting = false
                                 val msg = if (e is kotlinx.coroutines.TimeoutCancellationException) "Timeout: Check internet/rules." else "Error: ${e.localizedMessage}"
                                 Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            } finally {
+                                isSubmitting = false
                             }
                         }
                     },
@@ -452,13 +558,14 @@ fun TipCard(title: String, description: String, icon: ImageVector) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RewardsScreen(onBack: () -> Unit) {
+fun RewardsScreen(ecoPoints: Int, onBack: () -> Unit) {
     Scaffold(topBar = { TopAppBar(title = { Text("Eco Rewards", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().verticalScroll(rememberScrollState())) {
             Card(modifier = Modifier.padding(16.dp).fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Your Eco Points", color = Color.Gray); Text("120", fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = GreenDark); Text("Points Earned", fontSize = 14.sp, color = Color.Gray)
-                    Spacer(Modifier.height(16.dp)); LinearProgressIndicator(progress = { 0.8f }, modifier = Modifier.fillMaxWidth().height(8.dp), color = GreenPrimary, trackColor = Color.LightGray); Text("Next Reward: 150 Points", modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
+                    Text("Your Eco Points", color = Color.Gray); Text(ecoPoints.toString(), fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = GreenDark); Text("Points Earned", fontSize = 14.sp, color = Color.Gray)
+                    val progress = (ecoPoints % 150) / 150f
+                    Spacer(Modifier.height(16.dp)); LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(8.dp), color = GreenPrimary, trackColor = Color.LightGray); Text("Next Reward: 150 Points", modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
                 }
             }
             RewardListItem("Free Coffee", "150 Points", Icons.Default.Coffee, Color(0xFF795548))
