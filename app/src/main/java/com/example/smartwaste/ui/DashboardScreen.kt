@@ -1,7 +1,10 @@
 package com.example.smartwaste.ui
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.location.Geocoder
 import android.net.Uri
+import android.os.Environment
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,20 +38,27 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.example.smartwaste.admin.AdminDashboardScreen
 import com.example.smartwaste.auth.FirebaseAuthService
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
+import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.FirebaseDatabase
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
 
 /**
  * OOP: Abstraction
@@ -437,27 +447,129 @@ fun ActionCard(title: String, desc: String, icon: ImageVector, color: Color, onC
     }
 }
 
+@SuppressLint("MissingPermission")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
     var selectedIssue by remember { mutableStateOf("Overflowing Bin") }
-    var location by remember { mutableStateOf("Current Location: 123 Kampala St") }
+    var location by remember { mutableStateOf("Fetching location...") }
+    var latitude by remember { mutableDoubleStateOf(0.0) }
+    var longitude by remember { mutableDoubleStateOf(0.0) }
     var description by remember { mutableStateOf("") }
     var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var showImageSourceDialog by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
+    var showSuccessDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> capturedImageUri = uri; capturedBitmap = null }
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? -> capturedBitmap = bitmap; capturedImageUri = null }
+    // Helper to fetch current location
+    fun fetchLocation() {
+        fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+            if (loc != null) {
+                latitude = loc.latitude
+                longitude = loc.longitude
+                scope.launch {
+                    try {
+                        val geocoder = Geocoder(context, Locale.getDefault())
+                        val addresses = withContext(Dispatchers.IO) {
+                            geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                        }
+                        if (!addresses.isNullOrEmpty()) {
+                            val address = addresses[0]
+                            location = address.getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                        } else {
+                            location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                        }
+                    } catch (e: Exception) {
+                        location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                    }
+                }
+            } else {
+                location = "Location unavailable. Please check GPS."
+            }
+        }.addOnFailureListener {
+            location = "Failed to get location."
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> 
+        if (uri != null) {
+            capturedImageUri = uri
+            fetchLocation() // Fetch location when image is chosen
+        }
+    }
+    
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success: Boolean ->
+        if (success) {
+            capturedImageUri = tempPhotoUri
+            fetchLocation() // Fetch location when photo is taken
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val cameraGranted = permissions[android.Manifest.permission.CAMERA] ?: false
+        val locationGranted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        
+        if (cameraGranted && locationGranted) {
+            val photoFile = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "IMG_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            tempPhotoUri = uri
+            cameraLauncher.launch(uri)
+        } else {
+            Toast.makeText(context, "Camera and Location permissions are required", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     if (showImageSourceDialog) {
         AlertDialog(
-            onDismissRequest = { showImageSourceDialog = false }, title = { Text("Select Image Source") }, text = { Text("Choose where you want to get the photo from.") },
-            confirmButton = { TextButton(onClick = { showImageSourceDialog = false; galleryLauncher.launch("image/*") }) { Text("Gallery") } },
-            dismissButton = { TextButton(onClick = { showImageSourceDialog = false; cameraLauncher.launch(null) }) { Text("Camera") } }
+            onDismissRequest = { showImageSourceDialog = false }, 
+            title = { Text("Select Image Source") }, 
+            text = { Text("Choose where you want to get the photo from.") },
+            confirmButton = { 
+                TextButton(onClick = { 
+                    showImageSourceDialog = false
+                    galleryLauncher.launch("image/*") 
+                }) { Text("Gallery") } 
+            },
+            dismissButton = { 
+                TextButton(onClick = { 
+                    showImageSourceDialog = false
+                    permissionLauncher.launch(arrayOf(
+                        android.Manifest.permission.CAMERA,
+                        android.Manifest.permission.ACCESS_FINE_LOCATION,
+                        android.Manifest.permission.ACCESS_COARSE_LOCATION
+                    ))
+                }) { Text("Camera") } 
+            }
+        )
+    }
+
+    if (showSuccessDialog) {
+        AlertDialog(
+            onDismissRequest = { /* Don't dismiss on back click */ },
+            title = { Text("Report Submitted!") },
+            text = { 
+                Column {
+                    Icon(Icons.Default.CheckCircle, null, tint = GreenPrimary, modifier = Modifier.size(64.dp).align(Alignment.CenterHorizontally))
+                    Spacer(Modifier.height(16.dp))
+                    Text("Your report has been successfully sent to the administrator. Thank you for keeping our city clean!", textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(8.dp))
+                    Text("+10 Eco Points Awarded!", color = GreenPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.CenterHorizontally))
+                }
+            },
+            confirmButton = {
+                Button(onClick = { 
+                    showSuccessDialog = false
+                    onSubmit()
+                }, colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)) {
+                    Text("Great!")
+                }
+            }
         )
     }
 
@@ -476,13 +588,43 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
             Text("Add Photo", fontWeight = FontWeight.Bold)
             Surface(modifier = Modifier.fillMaxWidth().height(150.dp).padding(vertical = 8.dp).clickable { showImageSourceDialog = true }, shape = RoundedCornerShape(8.dp), color = Color.White, border = CardDefaults.outlinedCardBorder()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    if (capturedImageUri != null || capturedBitmap != null) { Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(48.dp), tint = GreenPrimary); Text("Photo Selected", color = GreenPrimary) }
+                    if (capturedImageUri != null) { 
+                        Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(48.dp), tint = GreenPrimary)
+                        Text("Photo Selected", color = GreenPrimary) 
+                    }
                     else { Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(48.dp), tint = Color.Gray); Text("Tap to select Gallery or Camera", color = Color.Gray) }
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("Location:", fontWeight = FontWeight.Bold)
-            OutlinedTextField(value = location, onValueChange = { location = it }, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), shape = RoundedCornerShape(8.dp))
+            Text("Auto-Detected Location:", fontWeight = FontWeight.Bold)
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = GreenPrimary.copy(alpha = 0.05f))
+            ) {
+                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.LocationOn, null, tint = GreenPrimary)
+                    Spacer(Modifier.width(8.dp))
+                    Text(location, style = MaterialTheme.typography.bodyMedium, color = GreenDark)
+                }
+            }
+            
+            // Map Preview
+            if (latitude != 0.0) {
+                Card(modifier = Modifier.fillMaxWidth().height(150.dp).padding(vertical = 8.dp), shape = RoundedCornerShape(12.dp)) {
+                    val reportLocation = LatLng(latitude, longitude)
+                    val cameraPositionState = rememberCameraPositionState {
+                        position = CameraPosition.fromLatLngZoom(reportLocation, 15f)
+                    }
+                    GoogleMap(
+                        modifier = Modifier.fillMaxSize(),
+                        cameraPositionState = cameraPositionState,
+                        uiSettings = MapUiSettings(zoomControlsEnabled = false, scrollGesturesEnabled = false)
+                    ) {
+                        Marker(state = rememberMarkerState(position = reportLocation))
+                    }
+                }
+            }
+
             Spacer(Modifier.height(16.dp))
             Text("Description:", fontWeight = FontWeight.Bold)
             OutlinedTextField(value = description, onValueChange = { description = it }, modifier = Modifier.fillMaxWidth().height(120.dp).padding(vertical = 8.dp), placeholder = { Text("Enter details about the problem...") }, shape = RoundedCornerShape(8.dp))
@@ -495,7 +637,17 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                             isSubmitting = true
                             try {
                                 val db = FirebaseDatabase.getInstance().reference
-                                val report = hashMapOf("userEmail" to userEmail, "issueType" to selectedIssue, "location" to location, "description" to description, "timestamp" to System.currentTimeMillis(), "status" to "Pending")
+                                val report = hashMapOf(
+                                    "userEmail" to userEmail, 
+                                    "issueType" to selectedIssue, 
+                                    "location" to location, 
+                                    "latitude" to latitude,
+                                    "longitude" to longitude,
+                                    "description" to description, 
+                                    "timestamp" to System.currentTimeMillis(), 
+                                    "status" to "Pending",
+                                    "imageUri" to (capturedImageUri?.toString() ?: "")
+                                )
                                 withTimeout(25000) { db.child("reports").push().setValue(report).await() }
                                 
                                 // Update user's impact/points for reporting
@@ -511,8 +663,7 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                                     }
                                 }
 
-                                Toast.makeText(context, "Report submitted successfully! +10 Eco Points!", Toast.LENGTH_SHORT).show()
-                                onSubmit()
+                                showSuccessDialog = true
                             } catch (e: Exception) {
                                 Log.e("SmartWaste", "Submission failed", e)
                                 val msg = if (e is kotlinx.coroutines.TimeoutCancellationException) "Timeout: Check internet/rules." else "Error: ${e.localizedMessage}"
@@ -522,7 +673,7 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                             }
                         }
                     },
-                    modifier = Modifier.weight(1f).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary), shape = RoundedCornerShape(8.dp), enabled = !isSubmitting
+                    modifier = Modifier.weight(1f).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary), shape = RoundedCornerShape(8.dp), enabled = !isSubmitting && latitude != 0.0
                 ) {
                     if (isSubmitting) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
                     else Text("Submit Report", fontWeight = FontWeight.Bold)

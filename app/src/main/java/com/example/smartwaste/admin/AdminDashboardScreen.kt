@@ -32,10 +32,15 @@ import coil.compose.AsyncImage
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.*
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.launch
 
 enum class AdminSubScreen {
@@ -76,7 +81,10 @@ fun AdminDashboardScreen(onLogout: () -> Unit) {
                             description = doc.child("description").getValue(String::class.java) ?: "",
                             status = doc.child("status").getValue(String::class.java) ?: "Pending",
                             issueType = doc.child("issueType").getValue(String::class.java) ?: "General",
-                            timestamp = doc.child("timestamp").getValue(Long::class.java) ?: 0L
+                            timestamp = doc.child("timestamp").getValue(Long::class.java) ?: 0L,
+                            latitude = doc.child("latitude").getValue(Double::class.java) ?: 0.0,
+                            longitude = doc.child("longitude").getValue(Double::class.java) ?: 0.0,
+                            imageUri = doc.child("imageUri").getValue(String::class.java) ?: ""
                         )
                     )
                 }
@@ -456,10 +464,41 @@ fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onMarkAsResolv
         onDismissRequest = onDismiss,
         title = { Text("Report Detail") },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (report.imageUri.isNotEmpty()) {
+                    AsyncImage(
+                        model = report.imageUri,
+                        contentDescription = "Report Image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
                 Text("Type: ${report.issueType}", fontWeight = FontWeight.Bold, color = GreenDark)
                 Text("User: ${report.userName}", style = MaterialTheme.typography.bodyMedium)
                 Text("Location: ${report.location}")
+
+                if (report.latitude != 0.0) {
+                    Spacer(Modifier.height(8.dp))
+                    Card(modifier = Modifier.fillMaxWidth().height(150.dp), shape = RoundedCornerShape(8.dp)) {
+                        val reportLocation = LatLng(report.latitude, report.longitude)
+                        val cameraPositionState = rememberCameraPositionState {
+                            position = CameraPosition.fromLatLngZoom(reportLocation, 15f)
+                        }
+                        GoogleMap(
+                            modifier = Modifier.fillMaxSize(),
+                            cameraPositionState = cameraPositionState,
+                            uiSettings = MapUiSettings(zoomControlsEnabled = false, scrollGesturesEnabled = false, tiltGesturesEnabled = false, rotationGesturesEnabled = false)
+                        ) {
+                            Marker(state = rememberMarkerState(position = reportLocation))
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(8.dp))
                 Text(report.description)
                 Spacer(Modifier.height(8.dp))
@@ -711,7 +750,10 @@ data class ReportItem(
     val description: String,
     val status: String = "Pending",
     val issueType: String = "General",
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val imageUri: String = ""
 )
 
 @Preview(showBackground = true)
