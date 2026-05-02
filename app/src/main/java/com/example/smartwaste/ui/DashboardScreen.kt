@@ -12,6 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,7 +50,10 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -102,20 +107,27 @@ fun SmartWasteApp(
     }
     val authService = remember { FirebaseAuthService() }
 
-    // Fetch full user profile from Database when logged in
+    // Real-time user profile listener
     LaunchedEffect(currentUser?.email) {
-        if (currentUser != null) {
-            authService.getCurrentUser()?.uid?.let { uid ->
-                val profile = authService.getUserProfile(uid)
-                if (profile != null) {
-                    currentUser = currentUser?.copy(
-                        fullName = profile["fullName"] as? String ?: currentUser!!.fullName,
-                        wasteCollected = (profile["wasteCollected"] as? Number)?.toDouble() ?: 0.0,
-                        impact = (profile["impact"] as? Number)?.toInt() ?: 0,
-                        ecoPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
-                    )
+        val uid = authService.getCurrentUser()?.uid
+        if (uid != null) {
+            val userRef = FirebaseDatabase.getInstance().reference.child("users").child(uid)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (snapshot.exists()) {
+                        currentUser = currentUser?.copy(
+                            fullName = snapshot.child("fullName").getValue(String::class.java) ?: currentUser!!.fullName,
+                            wasteCollected = snapshot.child("wasteCollected").getValue(Double::class.java) ?: 0.0,
+                            impact = snapshot.child("impact").getValue(Int::class.java) ?: 0,
+                            ecoPoints = snapshot.child("ecoPoints").getValue(Int::class.java) ?: 0
+                        )
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e("SmartWasteApp", "Database error: ${error.message}")
                 }
             }
+            userRef.addValueEventListener(listener)
         }
     }
 
@@ -134,16 +146,12 @@ fun SmartWasteApp(
                     val isUserAdmin = (email == "admin@smartwaste.com" && password == ADMIN_PASSWORD) || 
                                      (email == "admin" && password == ADMIN_PASSWORD)
                     
-                    // Logic for generating greeting name
                     val displayName = if (isUserAdmin) "Admin User" 
                                      else if (name.isNotBlank()) name 
                                      else email.split("@")[0].replaceFirstChar { it.uppercase() }
 
                     currentUser = User(email = email, fullName = displayName, isAdmin = isUserAdmin)
-                    
-                    // Critical: Notify MainActivity so it can switch to Driver/Admin dashboards if needed
                     onUserLoggedIn(email)
-                    
                     currentScreen = SmartWasteScreen.Home 
                 },
                 onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
@@ -158,8 +166,8 @@ fun SmartWasteApp(
                 onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
             )
             SmartWasteScreen.Home -> HomeScreen(
-                user = currentUser ?: User("", "User"), // State flows DOWN
-                onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue }, // Event flows UP
+                user = currentUser ?: User("", "User"),
+                onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue },
                 onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
                 onViewSchedule = { currentScreen = SmartWasteScreen.History },
                 onViewTips = { currentScreen = SmartWasteScreen.Tips },
@@ -176,16 +184,16 @@ fun SmartWasteApp(
                 authService = authService,
                 userEmail = currentUser?.email ?: "anonymous",
                 onBack = { currentScreen = SmartWasteScreen.Home },
-                onSubmit = { 
-                    // Refresh current user state from DB after reporting an issue
-                    currentScreen = SmartWasteScreen.Home 
-                }
+                onSubmit = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.Rewards -> RewardsScreen(
                 ecoPoints = currentUser?.ecoPoints ?: 0,
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
-            SmartWasteScreen.History -> HistoryScreen(onBack = { currentScreen = SmartWasteScreen.Home })
+            SmartWasteScreen.History -> HistoryScreen(
+                userEmail = currentUser?.email ?: "",
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
             SmartWasteScreen.Tips -> TipsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
             SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(onLogout = { 
                 authService.logout()
@@ -465,7 +473,6 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
     val scope = rememberCoroutineScope()
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-    // Helper to fetch current location
     fun fetchLocation() {
         fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
             if (loc != null) {
@@ -478,8 +485,7 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                             geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
                         }
                         if (!addresses.isNullOrEmpty()) {
-                            val address = addresses[0]
-                            location = address.getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                            location = addresses[0].getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         } else {
                             location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         }
@@ -498,14 +504,14 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> 
         if (uri != null) {
             capturedImageUri = uri
-            fetchLocation() // Fetch location when image is chosen
+            fetchLocation()
         }
     }
     
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success: Boolean ->
         if (success) {
             capturedImageUri = tempPhotoUri
-            fetchLocation() // Fetch location when photo is taken
+            fetchLocation()
         }
     }
 
@@ -608,13 +614,10 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                 }
             }
             
-            // Map Preview
             if (latitude != 0.0) {
                 Card(modifier = Modifier.fillMaxWidth().height(150.dp).padding(vertical = 8.dp), shape = RoundedCornerShape(12.dp)) {
                     val reportLocation = LatLng(latitude, longitude)
-                    val cameraPositionState = rememberCameraPositionState {
-                        position = CameraPosition.fromLatLngZoom(reportLocation, 15f)
-                    }
+                    val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(reportLocation, 15f) }
                     GoogleMap(
                         modifier = Modifier.fillMaxSize(),
                         cameraPositionState = cameraPositionState,
@@ -650,7 +653,6 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                                 )
                                 withTimeout(25000) { db.child("reports").push().setValue(report).await() }
                                 
-                                // Update user's impact/points for reporting
                                 authService.getCurrentUser()?.uid?.let { uid ->
                                     val profile = authService.getUserProfile(uid)
                                     if (profile != null) {
@@ -738,20 +740,57 @@ fun RewardListItem(title: String, subtitle: String, icon: ImageVector, iconColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(onBack: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Schedule", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
-            ScheduleItem("Tomorrow, 08:00 AM", "Organic Waste", "Scheduled")
+fun HistoryScreen(userEmail: String, onBack: () -> Unit) {
+    var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(userEmail) {
+        val reportsRef = FirebaseDatabase.getInstance().reference.child("reports")
+        reportsRef.addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val list = mutableListOf<ReportItem>()
+                for (doc in snapshot.children) {
+                    val email = doc.child("userEmail").getValue(String::class.java)
+                    if (email == userEmail) {
+                        list.add(
+                            ReportItem(
+                                time = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(doc.child("timestamp").getValue(Long::class.java) ?: 0L)),
+                                type = doc.child("issueType").getValue(String::class.java) ?: "General",
+                                status = doc.child("status").getValue(String::class.java) ?: "Pending"
+                            )
+                        )
+                    }
+                }
+                reports = list.reversed()
+                isLoading = false
+            }
+            override fun onCancelled(error: DatabaseError) { isLoading = false }
+        })
+    }
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Your Reports", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }
+    ) { innerPadding ->
+        if (isLoading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = GreenPrimary) }
+        } else if (reports.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reports yet. Start cleaning!", color = Color.Gray) }
+        } else {
+            LazyColumn(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
+                items(reports) { report -> ScheduleItem(report.time, report.type, report.status) }
+            }
         }
     }
 }
 
+data class ReportItem(val time: String, val type: String, val status: String)
+
 @Composable
 fun ScheduleItem(time: String, type: String, status: String) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
         Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column { Text(time, fontWeight = FontWeight.Bold); Text(type, color = Color.Gray) }
-            Text(status, color = GreenPrimary, fontWeight = FontWeight.Bold)
+            Text(status, color = if (status == "Pending") Color.Red else GreenPrimary, fontWeight = FontWeight.Bold)
         }
     }
 }

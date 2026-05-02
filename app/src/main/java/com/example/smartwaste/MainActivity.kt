@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
                             else -> {
                                 SmartWasteApp(
                                     initialEmail = email,
+                                    onUserLoggedIn = { currentEmail = it },
                                     onLogoutRequest = { currentEmail = null }
                                 )
                             }
