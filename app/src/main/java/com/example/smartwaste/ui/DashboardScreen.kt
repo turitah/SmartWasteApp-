@@ -191,7 +191,6 @@ fun SmartWasteApp(
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.History -> HistoryScreen(
-                userEmail = currentUser?.email ?: "",
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.Tips -> TipsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
@@ -228,22 +227,49 @@ fun WelcomeScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
 
 @Composable
 fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, String, String) -> Unit, onNavigateToRegister: () -> Unit) {
-    var email by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("admin@smartwaste.com") }
     var name by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("admin123") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Welcome Back", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = GreenDark)
+        Surface(
+            color = GreenPrimary.copy(alpha = 0.1f),
+            shape = CircleShape,
+            modifier = Modifier.size(100.dp)
+        ) {
+            Icon(
+                Icons.Default.AdminPanelSettings,
+                null,
+                tint = GreenPrimary,
+                modifier = Modifier.padding(20.dp)
+            )
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "Admin Login",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = GreenDark
+        )
+        Text(
+            "Access the management console",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.Gray
+        )
+        
         Spacer(Modifier.height(48.dp))
-        AuthTextField(value = name, onValueChange = { name = it }, label = "Full Name (Optional)", icon = Icons.Default.Person)
-        Spacer(Modifier.height(16.dp))
         AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
         AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
@@ -279,10 +305,11 @@ fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, Strin
             enabled = !isLoading && email.isNotEmpty() && password.isNotEmpty()
         ) {
             if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-            else Text("Login", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            else Text("Login to Dashboard", fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
+        
         Spacer(Modifier.height(24.dp))
-        TextButton(onClick = onNavigateToRegister) { Text("Don't have an account? Register", color = GreenDark) }
+        TextButton(onClick = onNavigateToRegister) { Text("Create new admin account", color = GreenDark) }
     }
 }
 
@@ -740,50 +767,175 @@ fun RewardListItem(title: String, subtitle: String, icon: ImageVector, iconColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryScreen(userEmail: String, onBack: () -> Unit) {
-    var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
+fun HistoryScreen(onBack: () -> Unit) {
+    val db = FirebaseDatabase.getInstance().reference
+    val authService = remember { FirebaseAuthService() }
+    val userEmail = authService.getCurrentUser()?.email ?: ""
+    var reports by remember { mutableStateOf<List<com.example.smartwaste.admin.ReportItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(userEmail) {
-        val reportsRef = FirebaseDatabase.getInstance().reference.child("reports")
-        reportsRef.addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val list = mutableListOf<ReportItem>()
-                for (doc in snapshot.children) {
-                    val email = doc.child("userEmail").getValue(String::class.java)
-                    if (email == userEmail) {
-                        list.add(
-                            ReportItem(
-                                time = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(doc.child("timestamp").getValue(Long::class.java) ?: 0L)),
-                                type = doc.child("issueType").getValue(String::class.java) ?: "General",
-                                status = doc.child("status").getValue(String::class.java) ?: "Pending"
+        if (userEmail.isNotEmpty()) {
+            db.child("reports").orderByChild("userEmail").equalTo(userEmail)
+                .addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+                    override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {
+                        val list = mutableListOf<com.example.smartwaste.admin.ReportItem>()
+                        for (doc in snapshot.children) {
+                            list.add(
+                                com.example.smartwaste.admin.ReportItem(
+                                    id = doc.key ?: "",
+                                    userName = doc.child("userEmail").getValue(String::class.java) ?: "Unknown",
+                                    location = doc.child("location").getValue(String::class.java) ?: "Unknown",
+                                    description = doc.child("description").getValue(String::class.java) ?: "",
+                                    status = doc.child("status").getValue(String::class.java) ?: "Pending",
+                                    issueType = doc.child("issueType").getValue(String::class.java) ?: "General",
+                                    timestamp = doc.child("timestamp").getValue(Long::class.java) ?: 0L,
+                                    adminNotes = doc.child("adminNotes").getValue(String::class.java) ?: ""
+                                )
                             )
-                        )
+                        }
+                        reports = list.sortedByDescending { it.timestamp }
+                        isLoading = false
                     }
-                }
-                reports = list.reversed()
-                isLoading = false
-            }
-            override fun onCancelled(error: DatabaseError) { isLoading = false }
-        })
+                    override fun onCancelled(error: com.google.firebase.database.DatabaseError) {
+                        isLoading = false
+                    }
+                })
+        }
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Your Reports", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }
+        topBar = {
+            TopAppBar(
+                title = { Text("My Reports & Schedule", color = Color.White) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)
+            )
+        }
     ) { innerPadding ->
-        if (isLoading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = GreenPrimary) }
-        } else if (reports.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reports yet. Start cleaning!", color = Color.Gray) }
-        } else {
-            LazyColumn(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
-                items(reports) { report -> ScheduleItem(report.time, report.type, report.status) }
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(
+                "Your Reported Issues",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = GreenDark,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            } else if (reports.isEmpty()) {
+                Text("No reports found.", color = Color.Gray, modifier = Modifier.padding(vertical = 16.dp))
+            } else {
+                reports.forEach { report ->
+                    ReportStatusCard(report)
+                }
             }
+
+            Spacer(Modifier.height(24.dp))
+            Text(
+                "Upcoming Collections",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = GreenDark,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            ScheduleItem("Tomorrow, 08:00 AM", "Organic Waste", "Scheduled")
+        }
+    }
+}
         }
     }
 }
 
-data class ReportItem(val time: String, val type: String, val status: String)
+
+
+@Composable
+fun ReportStatusCard(report: com.example.smartwaste.admin.ReportItem) {
+    val statusColor = when (report.status) {
+        "Resolved" -> Color(0xFF4CAF50)
+        "Pending" -> Color(0xFFFF9800)
+        else -> Color.Gray
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(2.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    report.issueType,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Surface(
+                    color = statusColor.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        report.status,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        color = statusColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            
+            Text(report.location, fontSize = 14.sp, color = Color.Gray)
+            Text(
+                report.description,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+
+            if (report.status == "Resolved" && report.adminNotes.isNotEmpty()) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(
+                        Icons.Default.Feedback,
+                        contentDescription = null,
+                        tint = GreenPrimary,
+                        modifier = Modifier.size(16.dp).padding(top = 2.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            "Admin Feedback:",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = GreenDark
+                        )
+                        Text(
+                            report.adminNotes,
+                            fontSize = 13.sp,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun ScheduleItem(time: String, type: String, status: String) {
