@@ -26,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -418,7 +419,7 @@ fun HomeScreen(user: User, onReportIssue: () -> Unit, onViewRewards: () -> Unit,
             Text("What would you like to do?", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ActionCard("Report Waste Issue", "Spotted illegal dumping or overflowing bins? Let us know.", Icons.Default.Report, GreenPrimary, onReportIssue)
-                ActionCard("Request Special Pickup", "Have bulky items? Schedule a custom collection.", Icons.Default.LocalShipping, Color(0xFF2196F3)) {}
+                ActionCard("Request Special Pickup", "Have bulky items? Schedule a custom collection.", Icons.Default.LocalShipping, Color(0xFF2196F3), onViewSchedule)
             }
         }
     }
@@ -467,32 +468,56 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
 
     // Helper to fetch current location
     fun fetchLocation() {
-        fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
-            if (loc != null) {
-                latitude = loc.latitude
-                longitude = loc.longitude
-                scope.launch {
-                    try {
-                        val geocoder = Geocoder(context, Locale.getDefault())
-                        val addresses = withContext(Dispatchers.IO) {
-                            geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
-                        }
-                        if (!addresses.isNullOrEmpty()) {
-                            val address = addresses[0]
-                            location = address.getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
-                        } else {
+        try {
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    latitude = loc.latitude
+                    longitude = loc.longitude
+                    scope.launch {
+                        try {
+                            val geocoder = Geocoder(context, Locale.getDefault())
+                            val addresses = withContext(Dispatchers.IO) {
+                                geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                            }
+                            if (!addresses.isNullOrEmpty()) {
+                                val address = addresses[0]
+                                location = address.getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                            } else {
+                                location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                            }
+                        } catch (e: Exception) {
                             location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         }
-                    } catch (e: Exception) {
-                        location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                     }
+                } else {
+                    location = "Location unavailable. Please check GPS."
+                    // Request fresh location if lastLocation is null
+                    val locationRequest = com.google.android.gms.location.LocationRequest.Builder(
+                        com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, 1000
+                    ).setMaxUpdates(1).build()
+                    
+                    fusedLocationClient.requestLocationUpdates(locationRequest, object : com.google.android.gms.location.LocationCallback() {
+                        override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
+                            val lastLoc = result.lastLocation
+                            if (lastLoc != null) {
+                                latitude = lastLoc.latitude
+                                longitude = lastLoc.longitude
+                                fetchLocation() // Call again to get address
+                            }
+                        }
+                    }, context.mainLooper)
                 }
-            } else {
-                location = "Location unavailable. Please check GPS."
+            }.addOnFailureListener {
+                location = "Failed to get location."
             }
-        }.addOnFailureListener {
-            location = "Failed to get location."
+        } catch (e: SecurityException) {
+            location = "Location permission denied."
         }
+    }
+
+    // Auto-fetch location on screen entry
+    LaunchedEffect(Unit) {
+        fetchLocation()
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> 
@@ -657,7 +682,7 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                                         val currentPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
                                         val currentImpact = (profile["impact"] as? Number)?.toInt() ?: 0
                                         db.child("users").child(uid).updateChildren(mapOf(
-                                            "ecoPoints" to currentPoints + 10,
+                                            "ecoPoints" to currentPoints + 5,
                                             "impact" to currentImpact + 2
                                         )).await()
                                     }
@@ -688,10 +713,14 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
 fun TipsScreen(onBack: () -> Unit) {
     Scaffold(topBar = { TopAppBar(title = { Text("Recycling Tips", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-            TipCard("Clean your recyclables", "Rinse food containers.", Icons.Default.CleaningServices)
-            TipCard("Check local guidelines", "Look for numbers in triangles.", Icons.Default.Info)
-            TipCard("Reduce & Reuse", "Source reduction is best.", Icons.Default.Loop)
-            TipCard("Compost organics", "Scraps turn into soil.", Icons.Default.Grass)
+            TipCard("Clean your recyclables", "Rinse food containers to avoid contamination.", Icons.Default.CleaningServices)
+            TipCard("Check local guidelines", "Different areas have different recycling rules. Look for local signs.", Icons.Default.Info)
+            TipCard("Reduce & Reuse", "The best way to manage waste is to not create it. Use reusable bags and bottles.", Icons.Default.Loop)
+            TipCard("Compost organics", "Fruit peels and vegetable scraps can be turned into nutrient-rich soil.", Icons.Default.Grass)
+            TipCard("Separate your waste", "Keep plastics, paper, and glass in separate bins for easier processing.", Icons.Default.Category)
+            TipCard("Don't bag recyclables", "Keep items loose in the bin. Plastic bags can jam sorting machinery.", Icons.Default.ShoppingBag)
+            TipCard("Electronic Waste", "Take old batteries and electronics to specialized e-waste collection points.", Icons.Default.Devices)
+            TipCard("Paper Recycling", "Avoid recycling paper that is soaked in grease (like pizza boxes).", Icons.Default.Article)
         }
     }
 }
@@ -710,20 +739,107 @@ fun TipCard(title: String, description: String, icon: ImageVector) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RewardsScreen(ecoPoints: Int, onBack: () -> Unit) {
+    val badgeInfo = remember(ecoPoints) {
+        when {
+            ecoPoints >= 300 -> BadgeData("Diamond", Color(0xFFB9F2FF), Icons.Default.Diamond)
+            ecoPoints >= 250 -> BadgeData("Platinum", Color(0xFFE5E4E2), Icons.Default.WorkspacePremium)
+            ecoPoints >= 200 -> BadgeData("Gold", Color(0xFFFFD700), Icons.Default.EmojiEvents)
+            ecoPoints >= 150 -> BadgeData("Silver", Color(0xFFC0C0C0), Icons.Default.Stars)
+            ecoPoints >= 100 -> BadgeData("Bronze", Color(0xFFCD7F32), Icons.Default.MilitaryTech)
+            else -> BadgeData("Eco Starter", Color.Gray, Icons.Default.Person)
+        }
+    }
+
+    val nextMilestone = remember(ecoPoints) {
+        when {
+            ecoPoints < 100 -> 100
+            ecoPoints < 150 -> 150
+            ecoPoints < 200 -> 200
+            ecoPoints < 250 -> 250
+            ecoPoints < 300 -> 300
+            else -> 500 // Max reached
+        }
+    }
+
     Scaffold(topBar = { TopAppBar(title = { Text("Eco Rewards", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().verticalScroll(rememberScrollState())) {
             Card(modifier = Modifier.padding(16.dp).fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Your Eco Points", color = Color.Gray); Text(ecoPoints.toString(), fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = GreenDark); Text("Points Earned", fontSize = 14.sp, color = Color.Gray)
-                    val progress = (ecoPoints % 150) / 150f
-                    Spacer(Modifier.height(16.dp)); LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(8.dp), color = GreenPrimary, trackColor = Color.LightGray); Text("Next Reward: 150 Points", modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
+                    Text("Your Eco Points", color = Color.Gray)
+                    Text(ecoPoints.toString(), fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = GreenDark)
+                    
+                    Spacer(Modifier.height(16.dp))
+                    
+                    // Badge Display
+                    Surface(
+                        color = badgeInfo.color.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(badgeInfo.icon, contentDescription = null, tint = badgeInfo.color)
+                            Spacer(Modifier.width(8.dp))
+                            Text(badgeInfo.name, fontWeight = FontWeight.Bold, color = GreenDark)
+                        }
+                    }
+
+                    val progress = (ecoPoints.toFloat() / nextMilestone).coerceIn(0f, 1f)
+                    Spacer(Modifier.height(24.dp))
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(8.dp), color = GreenPrimary, trackColor = Color.LightGray)
+                    Text("Next Goal: $nextMilestone Points", modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
                 }
             }
-            RewardListItem("Free Coffee", "150 Points", Icons.Default.Coffee, Color(0xFF795548))
-            RewardListItem("Discount", "200 Points", Icons.Default.ConfirmationNumber, Color(0xFFFF9800))
+
+            Text("Milestones & Badges", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            BadgeListItem("Bronze Badge", "100 Points Required", Icons.Default.MilitaryTech, Color(0xFFCD7F32), ecoPoints >= 100)
+            BadgeListItem("Silver Badge", "150 Points Required", Icons.Default.Stars, Color(0xFFC0C0C0), ecoPoints >= 150)
+            BadgeListItem("Gold Badge", "200 Points Required", Icons.Default.EmojiEvents, Color(0xFFFFD700), ecoPoints >= 200)
+            BadgeListItem("Platinum Badge", "250 Points Required", Icons.Default.WorkspacePremium, Color(0xFFE5E4E2), ecoPoints >= 250)
+            BadgeListItem("Diamond Badge", "300 Points Required", Icons.Default.Diamond, Color(0xFFB9F2FF), ecoPoints >= 300)
         }
     }
 }
+
+@Composable
+fun BadgeListItem(title: String, subtitle: String, icon: ImageVector, iconColor: Color, isEarned: Boolean) {
+    Card(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth()
+            .alpha(if (isEarned) 1f else 0.6f),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isEarned) Color.White else Color(0xFFF0F0F0)
+        ),
+        elevation = CardDefaults.cardElevation(if (isEarned) 2.dp else 0.dp)
+    ) {
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (isEarned) iconColor.copy(alpha = 0.1f) else Color.LightGray.copy(alpha = 0.2f),
+                modifier = Modifier.size(50.dp)
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = if (isEarned) iconColor else Color.Gray,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold, color = if (isEarned) GreenDark else Color.Gray)
+                Text(subtitle, color = Color.Gray, fontSize = 12.sp)
+            }
+            if (isEarned) {
+                Icon(Icons.Default.CheckCircle, contentDescription = "Earned", tint = GreenPrimary)
+            } else {
+                Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color.LightGray, modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+}
+
+data class BadgeData(val name: String, val color: Color, val icon: ImageVector)
 
 @Composable
 fun RewardListItem(title: String, subtitle: String, icon: ImageVector, iconColor: Color) {

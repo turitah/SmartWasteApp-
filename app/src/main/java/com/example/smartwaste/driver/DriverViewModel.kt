@@ -14,6 +14,7 @@ import kotlinx.coroutines.tasks.await
 
 data class PickupTask(
     val id: Int,
+    val dbKey: String = "",
     val customerName: String,
     val address: String,
     val wasteType: String,
@@ -74,58 +75,90 @@ class DriverViewModel : ViewModel() {
     private val db = FirebaseDatabase.getInstance().reference
     private val authService = FirebaseAuthService()
 
+    private val _reportStatus = MutableStateFlow<String?>(null)
+    val reportStatus: StateFlow<String?> = _reportStatus.asStateFlow()
+
     init {
-        loadTodayPickups()
-        loadNotifications()
         loadDriverProfile()
+        listenForAssignedTasks()
+        loadNotifications()
     }
 
     private fun loadDriverProfile() {
         viewModelScope.launch {
             authService.getCurrentUser()?.let { user ->
                 val profile = authService.getUserProfile(user.uid)
-                _driverName.value = profile?.get("fullName") as? String ?: "Driver"
+                val name = profile?.get("fullName") as? String ?: "Driver"
+                _driverName.value = name
+                // Re-listen for tasks once we have the name
+                listenForAssignedTasks()
             }
         }
     }
 
-    fun login(email: String, password: String) {
+    private fun listenForAssignedTasks() {
+        val name = _driverName.value
+        if (name == "Driver") return
+
+        db.child("assigned_tasks").orderByChild("driverName").equalTo(name)
+            .addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+                override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {
+                    val taskList = mutableListOf<PickupTask>()
+                    for (doc in snapshot.children) {
+                        taskList.add(
+                            PickupTask(
+                                id = doc.key.hashCode(),
+                                dbKey = doc.key ?: "",
+                                customerName = doc.child("customerName").getValue(String::class.java) ?: "Pickup",
+                                address = doc.child("address").getValue(String::class.java) ?: "No Address",
+                                wasteType = doc.child("wasteType").getValue(String::class.java) ?: "General",
+                                eta = doc.child("shift").getValue(String::class.java) ?: "TBD",
+                                isCompleted = doc.child("isCompleted").getValue(Boolean::class.java) ?: false
+                            )
+                        )
+                    }
+                    _tasks.value = taskList
+                    updateStats()
+                }
+                override fun onCancelled(error: com.google.firebase.database.DatabaseError) {
+                    Log.e("DriverViewModel", "Task listener cancelled", error.toException())
+                }
+            })
+    }
+
+    fun reportIssue(issueType: String, taskId: Int, reason: String) {
         viewModelScope.launch {
-            _isLoading.value = true
             try {
-                authService.login(email, password)
+                // Send to Realtime Database for Admin to see
+                val task = _tasks.value.find { it.id == taskId }
+                val report = hashMapOf(
+                    "userEmail" to "Driver: ${_driverName.value}",
+                    "issueType" to issueType.replace("_", " ").replaceFirstChar { it.uppercase() },
+                    "location" to (task?.address ?: "Unknown"),
+                    "description" to "Task #$taskId: $reason",
+                    "timestamp" to System.currentTimeMillis(),
+                    "status" to "Pending"
+                )
+                
+                db.child("reports").push().setValue(report).await()
+                _reportStatus.value = "Report submitted successfully! Admin has been notified."
+                Log.d("DriverViewModel", "Report sent to Realtime Database: $issueType")
             } catch (e: Exception) {
-                Log.e("DriverViewModel", "Login failed", e)
-            } finally {
-                _isLoading.value = false
+                Log.e("DriverViewModel", "Error reporting issue", e)
+                _reportStatus.value = "Failed to submit report. Please try again."
             }
         }
     }
 
-    fun loadTodayPickups() {
-        viewModelScope.launch {
-            _isLoading.value = true
-            delay(500)
-
-            val dummyPickups = listOf(
-                PickupTask(1, "Tukahebwa Ritah", "123 Kampala Rd", "Recycling", "0788123456", "8:15 AM", "85% Full", "Gate: 1234", 0.3136, 32.5811),
-                PickupTask(2, "Moola Joseph", "45 Jinja Rd", "Compost", "0772654321", "8:30 AM", "60% Full", "", 0.3200, 32.5900),
-                PickupTask(3, "Niwamanya Joel", "789 Ggaba Rd", "General Waste", "0755987654", "9:00 AM", "40% Full", "", 0.3000, 32.6000),
-                PickupTask(4, "Diana Prince", "250 Entebbe Rd", "Recycling", "0700112233", "9:20 AM", "Bin Not Out", "Behind house", 0.2900, 32.5700),
-                PickupTask(5, "Eve Wilson", "101 Bombo Rd", "Plastic", "0711445566", "10:00 AM", "70% Full", "", 0.3300, 32.5800)
-            )
-            _tasks.value = dummyPickups
-            updateStats()
-            _isLoading.value = false
-        }
+    fun clearReportStatus() {
+        _reportStatus.value = null
     }
 
     fun loadNotifications() {
         viewModelScope.launch {
             val dummyNotifications = listOf(
-                NotificationItem(1, "New Assignment", "You have 2 new pickups added to your route", "8:00 AM", false, "new_assignment"),
-                NotificationItem(2, "Complaint Alert", "Customer at 123 Kampala Rd reported missed pickup", "9:15 AM", false, "complaint"),
-                NotificationItem(3, "Route Change", "Your route has been optimized. Check new order.", "7:30 AM", true, "route_change")
+                NotificationItem(1, "New Assignment", "You have new pickups added to your route", "8:00 AM", false, "new_assignment"),
+                NotificationItem(2, "System Update", "Welcome to the new SmartWaste Driver portal", "7:30 AM", true, "route_change")
             )
             _notifications.value = dummyNotifications
             _showNotificationBadge.value = dummyNotifications.any { !it.isRead }
@@ -133,47 +166,11 @@ class DriverViewModel : ViewModel() {
     }
 
     fun markNotificationRead(notificationId: Int) {
-        val notification = _notifications.value.find { it.id == notificationId }
         val updated = _notifications.value.map { n ->
             if (n.id == notificationId) n.copy(isRead = true) else n
         }
         _notifications.value = updated
         _showNotificationBadge.value = updated.any { !it.isRead }
-
-        // If the notification was about new assignments, simulate adding them to the task list
-        if (notification?.type == "new_assignment" && !notification.isRead) {
-            handleNewAssignment()
-        }
-    }
-
-    private fun handleNewAssignment() {
-        val currentMaxId = _tasks.value.maxOfOrNull { it.id } ?: 0
-        val newTasks = listOf(
-            PickupTask(
-                id = currentMaxId + 1,
-                customerName = "Frank Miller",
-                address = "50 Kyadondo Rd",
-                wasteType = "Electronic Waste",
-                phoneNumber = "0788001122",
-                eta = "11:30 AM",
-                binFullness = "90% Full",
-                latitude = 0.3180,
-                longitude = 32.5850
-            ),
-            PickupTask(
-                id = currentMaxId + 2,
-                customerName = "Grace Hopper",
-                address = "12 Nakasero Hill",
-                wasteType = "Paper",
-                phoneNumber = "0777554433",
-                eta = "12:15 PM",
-                binFullness = "50% Full",
-                latitude = 0.3250,
-                longitude = 32.5820
-            )
-        )
-        _tasks.value = _tasks.value + newTasks
-        updateStats()
     }
 
     fun clearAllNotifications() {
@@ -193,47 +190,30 @@ class DriverViewModel : ViewModel() {
         _tasks.value = updatedTasks
     }
 
-    fun reportIssue(issueType: String, taskId: Int, reason: String) {
+    fun markTaskCompleted(taskId: Int) {
         viewModelScope.launch {
-            try {
-                // Update local state
-                if (issueType == "missed_pickup") {
-                    val updatedTasks = _tasks.value.map { task ->
-                        if (task.id == taskId) task.copy(isMissed = true, missedReason = reason) else task
+            val task = _tasks.value.find { it.id == taskId }
+            if (task != null && task.dbKey.isNotEmpty()) {
+                try {
+                    db.child("assigned_tasks").child(task.dbKey).child("isCompleted").setValue(true).await()
+                    Log.d("DriverViewModel", "Task ${task.dbKey} marked as completed in DB")
+                    
+                    // The ValueEventListener will automatically update the local _tasks list
+                    // but we can also update it immediately for better UX
+                    val updatedTasks = _tasks.value.map {
+                        if (it.id == taskId) it.copy(isCompleted = true) else it
                     }
                     _tasks.value = updatedTasks
+                    updateStats()
+                } catch (e: Exception) {
+                    Log.e("DriverViewModel", "Error marking task completed", e)
                 }
-                updateStats()
-
-                // Send to Realtime Database for Admin to see
-                val task = _tasks.value.find { it.id == taskId }
-                val report = hashMapOf(
-                    "userEmail" to "Driver: ${_driverName.value}",
-                    "issueType" to issueType.replace("_", " ").replaceFirstChar { it.uppercase() },
-                    "location" to (task?.address ?: "Unknown"),
-                    "description" to "Task #$taskId: $reason",
-                    "timestamp" to System.currentTimeMillis(),
-                    "status" to "Pending"
-                )
-                
-                db.child("reports").push().setValue(report).await()
-                Log.d("DriverViewModel", "Report sent to Realtime Database: $issueType")
-            } catch (e: Exception) {
-                Log.e("DriverViewModel", "Error reporting issue", e)
             }
         }
     }
 
-    fun markTaskCompleted(taskId: Int) {
-        val updatedTasks = _tasks.value.map { task ->
-            if (task.id == taskId) task.copy(isCompleted = true) else task
-        }
-        _tasks.value = updatedTasks
-        updateStats()
-    }
-
     fun refreshData() {
-        loadTodayPickups()
+        listenForAssignedTasks()
         loadNotifications()
     }
 
@@ -249,6 +229,13 @@ class DriverViewModel : ViewModel() {
             missedPickups = missed,
             pendingPickups = pending
         )
+    }
+
+    fun login(email: String, password: String) {
+        viewModelScope.launch {
+            authService.login(email, password)
+            loadDriverProfile()
+        }
     }
 
     fun logout() {
