@@ -1,7 +1,6 @@
 package com.example.smartwaste.ui
 
 import android.annotation.SuppressLint
-import android.graphics.Bitmap
 import android.location.Geocoder
 import android.net.Uri
 import android.os.Environment
@@ -12,8 +11,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.example.smartwaste.admin.AdminDashboardScreen
+import com.example.smartwaste.admin.ReportItem
 import com.example.smartwaste.auth.FirebaseAuthService
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
@@ -49,21 +47,20 @@ import com.example.smartwaste.ui.theme.SmartWasteTheme
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * OOP: Abstraction
@@ -103,7 +100,7 @@ fun SmartWasteApp(
         mutableStateOf(if (initialEmail != null) SmartWasteScreen.Home else SmartWasteScreen.Welcome) 
     }
     var currentUser by remember { 
-        mutableStateOf(initialEmail?.let { User(it, it.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
+        mutableStateOf(initialEmail?.let { email -> User(email, email.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
     }
     val authService = remember { FirebaseAuthService() }
 
@@ -147,8 +144,7 @@ fun SmartWasteApp(
                                      (email == "admin" && password == ADMIN_PASSWORD)
                     
                     val displayName = if (isUserAdmin) "Admin User" 
-                                     else if (name.isNotBlank()) name 
-                                     else email.split("@")[0].replaceFirstChar { it.uppercase() }
+                                     else name.ifBlank { email.split("@")[0].replaceFirstChar { it.uppercase() } }
 
                     currentUser = User(email = email, fullName = displayName, isAdmin = isUserAdmin)
                     onUserLoggedIn(email)
@@ -509,12 +505,22 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                     try {
                         val geocoder = Geocoder(context, Locale.getDefault())
                         val addresses = withContext(Dispatchers.IO) {
-                            geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                val result = suspendCoroutine { continuation ->
+                                    geocoder.getFromLocation(loc.latitude, loc.longitude, 1) { addresses ->
+                                        continuation.resume(addresses)
+                                    }
+                                }
+                                result
+                            } else {
+                                @Suppress("DEPRECATION")
+                                geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                            }
                         }
-                        if (!addresses.isNullOrEmpty()) {
-                            location = addresses[0].getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                        location = if (!addresses.isNullOrEmpty()) {
+                            addresses[0].getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         } else {
-                            location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                            "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         }
                     } catch (e: Exception) {
                         location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
@@ -771,18 +777,18 @@ fun HistoryScreen(onBack: () -> Unit) {
     val db = FirebaseDatabase.getInstance().reference
     val authService = remember { FirebaseAuthService() }
     val userEmail = authService.getCurrentUser()?.email ?: ""
-    var reports by remember { mutableStateOf<List<com.example.smartwaste.admin.ReportItem>>(emptyList()) }
+    var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(userEmail) {
         if (userEmail.isNotEmpty()) {
             db.child("reports").orderByChild("userEmail").equalTo(userEmail)
-                .addValueEventListener(object : com.google.firebase.database.ValueEventListener {
-                    override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {
-                        val list = mutableListOf<com.example.smartwaste.admin.ReportItem>()
+                .addValueEventListener(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        val list = mutableListOf<ReportItem>()
                         for (doc in snapshot.children) {
                             list.add(
-                                com.example.smartwaste.admin.ReportItem(
+                                ReportItem(
                                     id = doc.key ?: "",
                                     userName = doc.child("userEmail").getValue(String::class.java) ?: "Unknown",
                                     location = doc.child("location").getValue(String::class.java) ?: "Unknown",
@@ -797,7 +803,7 @@ fun HistoryScreen(onBack: () -> Unit) {
                         reports = list.sortedByDescending { it.timestamp }
                         isLoading = false
                     }
-                    override fun onCancelled(error: com.google.firebase.database.DatabaseError) {
+                    override fun onCancelled(error: DatabaseError) {
                         isLoading = false
                     }
                 })
@@ -854,14 +860,11 @@ fun HistoryScreen(onBack: () -> Unit) {
         }
     }
 }
-        }
-    }
-}
 
 
 
 @Composable
-fun ReportStatusCard(report: com.example.smartwaste.admin.ReportItem) {
+fun ReportStatusCard(report: ReportItem) {
     val statusColor = when (report.status) {
         "Resolved" -> Color(0xFF4CAF50)
         "Pending" -> Color(0xFFFF9800)
