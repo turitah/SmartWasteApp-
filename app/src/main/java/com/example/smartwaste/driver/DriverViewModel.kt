@@ -78,6 +78,9 @@ class DriverViewModel : ViewModel() {
     private val _reportStatus = MutableStateFlow<String?>(null)
     val reportStatus: StateFlow<String?> = _reportStatus.asStateFlow()
 
+    private val _loginStatus = MutableStateFlow<Result<Unit>?>(null)
+    val loginStatus: StateFlow<Result<Unit>?> = _loginStatus.asStateFlow()
+
     init {
         loadDriverProfile()
         listenForAssignedTasks()
@@ -233,9 +236,20 @@ class DriverViewModel : ViewModel() {
 
     fun login(email: String, password: String) {
         viewModelScope.launch {
-            authService.login(email, password)
-            loadDriverProfile()
+            _isLoading.value = true
+            val result = authService.login(email, password)
+            if (result.isSuccess) {
+                loadDriverProfile()
+                _loginStatus.value = Result.success(Unit)
+            } else {
+                _loginStatus.value = Result.failure(result.exceptionOrNull() ?: Exception("Login failed"))
+            }
+            _isLoading.value = false
         }
+    }
+
+    fun clearLoginStatus() {
+        _loginStatus.value = null
     }
 
     fun logout() {

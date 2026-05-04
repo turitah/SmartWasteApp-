@@ -1,7 +1,6 @@
 package com.example.smartwaste.ui
 
 import android.annotation.SuppressLint
-import android.graphics.Bitmap
 import android.location.Geocoder
 import android.net.Uri
 import android.os.Environment
@@ -41,24 +40,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.example.smartwaste.admin.AdminDashboardScreen
+import com.example.smartwaste.admin.ReportItem
 import com.example.smartwaste.auth.FirebaseAuthService
 import com.example.smartwaste.ui.theme.GreenDark
 import com.example.smartwaste.ui.theme.GreenPrimary
 import com.example.smartwaste.ui.theme.SmartWasteTheme
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.*
 
 /**
@@ -91,7 +91,7 @@ data class User(
 @Composable
 fun SmartWasteApp(
     initialEmail: String? = null, 
-    onUserLoggedIn: (String) -> Unit = {},
+    onUserLoggedIn: (String, String) -> Unit = { _, _ -> },
     onLogoutRequest: () -> Unit = {}
 ) {
     // State management (Source of Truth)
@@ -99,24 +99,32 @@ fun SmartWasteApp(
         mutableStateOf(if (initialEmail != null) SmartWasteScreen.Home else SmartWasteScreen.Welcome) 
     }
     var currentUser by remember { 
-        mutableStateOf(initialEmail?.let { User(it, it.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
+        mutableStateOf(initialEmail?.let { email -> User(email, email.split("@")[0].replaceFirstChar { it.uppercase() }) }) 
     }
     val authService = remember { FirebaseAuthService() }
 
-    // Fetch full user profile from Database when logged in
+    // Real-time user profile listener
     LaunchedEffect(currentUser?.email) {
-        if (currentUser != null) {
-            authService.getCurrentUser()?.uid?.let { uid ->
-                val profile = authService.getUserProfile(uid)
-                if (profile != null) {
-                    currentUser = currentUser?.copy(
-                        fullName = profile["fullName"] as? String ?: currentUser!!.fullName,
-                        wasteCollected = (profile["wasteCollected"] as? Number)?.toDouble() ?: 0.0,
-                        impact = (profile["impact"] as? Number)?.toInt() ?: 0,
-                        ecoPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
-                    )
+        val uid = authService.getCurrentUser()?.uid
+        if (uid != null) {
+            val userRef = FirebaseDatabase.getInstance().reference.child("users").child(uid)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (snapshot.exists()) {
+                        currentUser = currentUser?.copy(
+                            fullName = snapshot.child("fullName").getValue(String::class.java) ?: currentUser!!.fullName,
+                            wasteCollected = snapshot.child("wasteCollected").getValue(Double::class.java) ?: 0.0,
+                            impact = snapshot.child("impact").getValue(Int::class.java) ?: 0,
+                            ecoPoints = snapshot.child("ecoPoints").getValue(Int::class.java) ?: 0,
+                            isAdmin = snapshot.child("role").getValue(String::class.java) == "admin"
+                        )
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e("SmartWasteApp", "Database error: ${error.message}")
                 }
             }
+            userRef.addValueEventListener(listener)
         }
     }
 
@@ -131,36 +139,29 @@ fun SmartWasteApp(
             )
             SmartWasteScreen.Login -> LoginScreen(
                 authService = authService,
-                onLoginSuccess = { email, password, name -> 
-                    val isUserAdmin = (email == "admin@smartwaste.com" && password == ADMIN_PASSWORD) || 
-                                     (email == "admin" && password == ADMIN_PASSWORD)
-                    
-                    // Logic for generating greeting name
+                onLoginSuccess = { email, password, name, role -> 
+                    val isUserAdmin = role == "admin"
                     val displayName = if (isUserAdmin) "Admin User" 
-                                     else if (name.isNotBlank()) name 
-                                     else email.split("@")[0].replaceFirstChar { it.uppercase() }
+                                     else name.ifBlank { email.split("@")[0].replaceFirstChar { it.uppercase() } }
 
                     currentUser = User(email = email, fullName = displayName, isAdmin = isUserAdmin)
-                    
-                    // Critical: Notify MainActivity so it can switch to Driver/Admin dashboards if needed
-                    onUserLoggedIn(email)
-                    
-                    currentScreen = SmartWasteScreen.Home 
+                    onUserLoggedIn(email, role)
+                    currentScreen = if (isUserAdmin) SmartWasteScreen.AdminDashboard else SmartWasteScreen.Home 
                 },
                 onNavigateToRegister = { currentScreen = SmartWasteScreen.Register }
             )
             SmartWasteScreen.Register -> RegisterScreen(
                 authService = authService,
-                onRegisterSuccess = { user, email -> 
+                onRegisterSuccess = { user, email, role -> 
                     currentUser = user
-                    onUserLoggedIn(email)
-                    currentScreen = SmartWasteScreen.Home 
+                    onUserLoggedIn(email, role)
+                    currentScreen = if (role == "admin") SmartWasteScreen.AdminDashboard else SmartWasteScreen.Home 
                 },
                 onNavigateToLogin = { currentScreen = SmartWasteScreen.Login }
             )
             SmartWasteScreen.Home -> HomeScreen(
-                user = currentUser ?: User("", "User"), // State flows DOWN
-                onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue }, // Event flows UP
+                user = currentUser ?: User("", "User"),
+                onReportIssue = { currentScreen = SmartWasteScreen.ReportIssue },
                 onViewRewards = { currentScreen = SmartWasteScreen.Rewards },
                 onViewSchedule = { currentScreen = SmartWasteScreen.History },
                 onViewTips = { currentScreen = SmartWasteScreen.Tips },
@@ -174,19 +175,17 @@ fun SmartWasteApp(
                 isAdmin = currentUser?.isAdmin ?: false
             )
             SmartWasteScreen.ReportIssue -> ReportIssueScreen(
-                authService = authService,
                 userEmail = currentUser?.email ?: "anonymous",
                 onBack = { currentScreen = SmartWasteScreen.Home },
-                onSubmit = { 
-                    // Refresh current user state from DB after reporting an issue
-                    currentScreen = SmartWasteScreen.Home 
-                }
+                onSubmit = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.Rewards -> RewardsScreen(
                 ecoPoints = currentUser?.ecoPoints ?: 0,
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
-            SmartWasteScreen.History -> HistoryScreen(onBack = { currentScreen = SmartWasteScreen.Home })
+            SmartWasteScreen.History -> HistoryScreen(
+                onBack = { currentScreen = SmartWasteScreen.Home }
+            )
             SmartWasteScreen.Tips -> TipsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
             SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(onLogout = { 
                 authService.logout()
@@ -220,23 +219,49 @@ fun WelcomeScreen(onLogin: () -> Unit, onRegister: () -> Unit) {
 }
 
 @Composable
-fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, String, String) -> Unit, onNavigateToRegister: () -> Unit) {
+fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, String, String, String) -> Unit, onNavigateToRegister: () -> Unit) {
     var email by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Welcome Back", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = GreenDark)
+        Surface(
+            color = GreenPrimary.copy(alpha = 0.1f),
+            shape = CircleShape,
+            modifier = Modifier.size(100.dp)
+        ) {
+            Icon(
+                Icons.Default.LockPerson,
+                null,
+                tint = GreenPrimary,
+                modifier = Modifier.padding(20.dp)
+            )
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "Welcome Back",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = GreenDark
+        )
+        Text(
+            "Sign in to continue your impact",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.Gray
+        )
+        
         Spacer(Modifier.height(48.dp))
-        AuthTextField(value = name, onValueChange = { name = it }, label = "Full Name (Optional)", icon = Icons.Default.Person)
-        Spacer(Modifier.height(16.dp))
         AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
         AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
@@ -254,8 +279,11 @@ fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, Strin
                     errorMessage = ""
                     try {
                         val result = authService.login(email, password)
-                        result.onSuccess {
-                            onLoginSuccess(email, password, name)
+                        result.onSuccess { user ->
+                            val profile = authService.getUserProfile(user.uid)
+                            val role = profile?.get("role") as? String ?: "user"
+                            val name = profile?.get("fullName") as? String ?: ""
+                            onLoginSuccess(email, password, name, role)
                         }.onFailure { e ->
                             errorMessage = e.message ?: "Login failed"
                         }
@@ -274,17 +302,18 @@ fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, Strin
             if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
             else Text("Login", fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
+        
         Spacer(Modifier.height(24.dp))
         TextButton(onClick = onNavigateToRegister) { Text("Don't have an account? Register", color = GreenDark) }
     }
 }
 
 @Composable
-fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, String) -> Unit, onNavigateToLogin: () -> Unit) {
+fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, String, String) -> Unit, onNavigateToLogin: () -> Unit) {
     var fullName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var isAdminRegistration by remember { mutableStateOf(false) }
+    var selectedRole by remember { mutableStateOf("user") }
     var adminKey by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
@@ -296,7 +325,7 @@ fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, S
         verticalArrangement = Arrangement.Center
     ) {
         Text("Create Account", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = GreenDark)
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(32.dp))
         AuthTextField(value = fullName, onValueChange = { fullName = it; errorMessage = "" }, label = "Full Name", icon = Icons.Default.Person)
         Spacer(Modifier.height(16.dp))
         AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
@@ -304,12 +333,23 @@ fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, S
         AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
         
         Spacer(Modifier.height(16.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { isAdminRegistration = !isAdminRegistration }) {
-            Checkbox(checked = isAdminRegistration, onCheckedChange = { isAdminRegistration = it })
-            Text("Register as Admin", color = GreenDark, fontWeight = FontWeight.Medium)
+        Text("Register as:", modifier = Modifier.fillMaxWidth(), color = GreenDark, fontWeight = FontWeight.Bold)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selectedRole == "user", onClick = { selectedRole = "user" })
+                Text("User")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selectedRole == "driver", onClick = { selectedRole = "driver" })
+                Text("Driver")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selectedRole == "admin", onClick = { selectedRole = "admin" })
+                Text("Admin")
+            }
         }
 
-        if (isAdminRegistration) {
+        if (selectedRole == "admin") {
             AuthTextField(value = adminKey, onValueChange = { adminKey = it; errorMessage = "" }, label = "Admin Secret Key", icon = Icons.Default.VpnKey, isPassword = true)
         }
 
@@ -321,17 +361,16 @@ fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, S
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
-                if (isAdminRegistration && adminKey != ADMIN_SECRET_KEY) {
+                if (selectedRole == "admin" && adminKey != ADMIN_SECRET_KEY) {
                     errorMessage = "Invalid Admin Key"
                 } else {
                     scope.launch { 
                         isLoading = true
                         errorMessage = ""
                         try {
-                            val role = if (isAdminRegistration) "admin" else "user"
-                            val result = authService.register(email, password, fullName, role)
+                            val result = authService.register(email, password, fullName, selectedRole)
                             result.onSuccess {
-                                onRegisterSuccess(User(email, fullName, isAdminRegistration), email)
+                                onRegisterSuccess(User(email, fullName, selectedRole == "admin"), email, selectedRole)
                             }.onFailure { e ->
                                 errorMessage = e.message ?: "Registration failed"
                             }
@@ -360,15 +399,22 @@ fun RegisterScreen(authService: FirebaseAuthService, onRegisterSuccess: (User, S
 fun AuthTextField(value: String, onValueChange: (String) -> Unit, label: String, icon: ImageVector, isPassword: Boolean = false) {
     var passwordVisible by remember { mutableStateOf(false) }
     OutlinedTextField(
-        value = value, onValueChange = onValueChange, label = { Text(label) }, leadingIcon = { Icon(icon, null, tint = GreenPrimary) },
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, null, tint = GreenPrimary) },
         trailingIcon = {
             if (isPassword) {
-                IconButton(onClick = { passwordVisible = !passwordVisible }) { Icon(if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null) }
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff, null)
+                }
             }
         },
         visualTransformation = if (isPassword && !passwordVisible) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Email),
-        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        singleLine = true,
         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = GreenPrimary, focusedLabelColor = GreenPrimary)
     )
 }
@@ -451,7 +497,7 @@ fun ActionCard(title: String, desc: String, icon: ImageVector, color: Color, onC
 @SuppressLint("MissingPermission")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
+fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
     var selectedIssue by remember { mutableStateOf("Overflowing Bin") }
     var location by remember { mutableStateOf("Fetching location...") }
     var latitude by remember { mutableDoubleStateOf(0.0) }
@@ -465,14 +511,18 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 15f)
+    }
 
-    // Helper to fetch current location
     fun fetchLocation() {
         try {
             fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
                 if (loc != null) {
                     latitude = loc.latitude
                     longitude = loc.longitude
+                    cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15f))
                     scope.launch {
                         try {
                             val geocoder = Geocoder(context, Locale.getDefault())
@@ -485,37 +535,21 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                             } else {
                                 location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                             }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                         }
                     }
                 } else {
                     location = "Location unavailable. Please check GPS."
-                    // Request fresh location if lastLocation is null
-                    val locationRequest = com.google.android.gms.location.LocationRequest.Builder(
-                        com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, 1000
-                    ).setMaxUpdates(1).build()
-                    
-                    fusedLocationClient.requestLocationUpdates(locationRequest, object : com.google.android.gms.location.LocationCallback() {
-                        override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
-                            val lastLoc = result.lastLocation
-                            if (lastLoc != null) {
-                                latitude = lastLoc.latitude
-                                longitude = lastLoc.longitude
-                                fetchLocation() // Call again to get address
-                            }
-                        }
-                    }, context.mainLooper)
                 }
             }.addOnFailureListener {
                 location = "Failed to get location."
             }
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             location = "Location permission denied."
         }
     }
 
-    // Auto-fetch location on screen entry
     LaunchedEffect(Unit) {
         fetchLocation()
     }
@@ -523,14 +557,14 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? -> 
         if (uri != null) {
             capturedImageUri = uri
-            fetchLocation() // Fetch location when image is chosen
+            fetchLocation()
         }
     }
     
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success: Boolean ->
         if (success) {
             capturedImageUri = tempPhotoUri
-            fetchLocation() // Fetch location when photo is taken
+            fetchLocation()
         }
     }
 
@@ -545,16 +579,17 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
             tempPhotoUri = uri
             cameraLauncher.launch(uri)
+            fetchLocation()
         } else {
-            Toast.makeText(context, "Camera and Location permissions are required", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Permissions required", Toast.LENGTH_SHORT).show()
         }
     }
 
     if (showImageSourceDialog) {
         AlertDialog(
             onDismissRequest = { showImageSourceDialog = false }, 
-            title = { Text("Select Image Source") }, 
-            text = { Text("Choose where you want to get the photo from.") },
+            title = { Text("Select Source") }, 
+            text = { Text("Choose image source.") },
             confirmButton = { 
                 TextButton(onClick = { 
                     showImageSourceDialog = false
@@ -576,30 +611,20 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
 
     if (showSuccessDialog) {
         AlertDialog(
-            onDismissRequest = { /* Don't dismiss on back click */ },
+            onDismissRequest = { },
             title = { Text("Report Submitted!") },
-            text = { 
-                Column {
-                    Icon(Icons.Default.CheckCircle, null, tint = GreenPrimary, modifier = Modifier.size(64.dp).align(Alignment.CenterHorizontally))
-                    Spacer(Modifier.height(16.dp))
-                    Text("Your report has been successfully sent to the administrator. Thank you for keeping our city clean!", textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(8.dp))
-                    Text("+10 Eco Points Awarded!", color = GreenPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.CenterHorizontally))
-                }
-            },
+            text = { Text("Your report has been sent. Thank you!") },
             confirmButton = {
                 Button(onClick = { 
                     showSuccessDialog = false
                     onSubmit()
-                }, colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)) {
-                    Text("Great!")
-                }
+                }) { Text("OK") }
             }
         )
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Report an Issue", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }
+        topBar = { TopAppBar(title = { Text("Report Issue", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
             Text("Select Issue:", fontWeight = FontWeight.Bold)
@@ -615,94 +640,59 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     if (capturedImageUri != null) { 
                         Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(48.dp), tint = GreenPrimary)
-                        Text("Photo Selected", color = GreenPrimary) 
-                    }
-                    else { Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(48.dp), tint = Color.Gray); Text("Tap to select Gallery or Camera", color = Color.Gray) }
+                    } else { Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(48.dp), tint = Color.Gray) }
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("Auto-Detected Location:", fontWeight = FontWeight.Bold)
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = GreenPrimary.copy(alpha = 0.05f))
-            ) {
-                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.LocationOn, null, tint = GreenPrimary)
-                    Spacer(Modifier.width(8.dp))
-                    Text(location, style = MaterialTheme.typography.bodyMedium, color = GreenDark)
-                }
-            }
+            Text("Location:", fontWeight = FontWeight.Bold)
             
-            // Map Preview
-            if (latitude != 0.0) {
-                Card(modifier = Modifier.fillMaxWidth().height(150.dp).padding(vertical = 8.dp), shape = RoundedCornerShape(12.dp)) {
-                    val reportLocation = LatLng(latitude, longitude)
-                    val cameraPositionState = rememberCameraPositionState {
-                        position = CameraPosition.fromLatLngZoom(reportLocation, 15f)
-                    }
-                    GoogleMap(
-                        modifier = Modifier.fillMaxSize(),
-                        cameraPositionState = cameraPositionState,
-                        uiSettings = MapUiSettings(zoomControlsEnabled = false, scrollGesturesEnabled = false)
-                    ) {
-                        Marker(state = rememberMarkerState(position = reportLocation))
-                    }
+            Card(modifier = Modifier.fillMaxWidth().height(200.dp).padding(vertical = 8.dp), shape = RoundedCornerShape(12.dp)) {
+                GoogleMap(
+                    modifier = Modifier.fillMaxSize(),
+                    cameraPositionState = cameraPositionState
+                ) {
+                    Marker(
+                        state = rememberMarkerState(position = LatLng(latitude, longitude)),
+                        title = "Your Location",
+                        snippet = location
+                    )
                 }
             }
+            Text(location, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 8.dp))
 
             Spacer(Modifier.height(16.dp))
             Text("Description:", fontWeight = FontWeight.Bold)
-            OutlinedTextField(value = description, onValueChange = { description = it }, modifier = Modifier.fillMaxWidth().height(120.dp).padding(vertical = 8.dp), placeholder = { Text("Enter details about the problem...") }, shape = RoundedCornerShape(8.dp))
+            OutlinedTextField(value = description, onValueChange = { description = it }, modifier = Modifier.fillMaxWidth().height(120.dp).padding(vertical = 8.dp), placeholder = { Text("Details...") }, shape = RoundedCornerShape(8.dp))
             Spacer(Modifier.height(32.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Button(onClick = onBack, modifier = Modifier.weight(1f).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray), shape = RoundedCornerShape(8.dp)) { Text("Cancel", color = Color.Black) }
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isSubmitting = true
-                            try {
-                                val db = FirebaseDatabase.getInstance().reference
-                                val report = hashMapOf(
-                                    "userEmail" to userEmail, 
-                                    "issueType" to selectedIssue, 
-                                    "location" to location, 
-                                    "latitude" to latitude,
-                                    "longitude" to longitude,
-                                    "description" to description, 
-                                    "timestamp" to System.currentTimeMillis(), 
-                                    "status" to "Pending",
-                                    "imageUri" to (capturedImageUri?.toString() ?: "")
-                                )
-                                withTimeout(25000) { db.child("reports").push().setValue(report).await() }
-                                
-                                // Update user's impact/points for reporting
-                                authService.getCurrentUser()?.uid?.let { uid ->
-                                    val profile = authService.getUserProfile(uid)
-                                    if (profile != null) {
-                                        val currentPoints = (profile["ecoPoints"] as? Number)?.toInt() ?: 0
-                                        val currentImpact = (profile["impact"] as? Number)?.toInt() ?: 0
-                                        db.child("users").child(uid).updateChildren(mapOf(
-                                            "ecoPoints" to currentPoints + 5,
-                                            "impact" to currentImpact + 2
-                                        )).await()
-                                    }
-                                }
-
-                                showSuccessDialog = true
-                            } catch (e: Exception) {
-                                Log.e("SmartWaste", "Submission failed", e)
-                                val msg = if (e is kotlinx.coroutines.TimeoutCancellationException) "Timeout: Check internet/rules." else "Error: ${e.localizedMessage}"
-                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                            } finally {
-                                isSubmitting = false
-                            }
+            Button(
+                onClick = {
+                    scope.launch {
+                        isSubmitting = true
+                        try {
+                            val db = FirebaseDatabase.getInstance().reference
+                            val report = hashMapOf(
+                                "userEmail" to userEmail, 
+                                "issueType" to selectedIssue, 
+                                "location" to location, 
+                                "latitude" to latitude,
+                                "longitude" to longitude,
+                                "description" to description, 
+                                "timestamp" to System.currentTimeMillis(), 
+                                "status" to "Pending"
+                            )
+                            db.child("reports").push().setValue(report).await()
+                            showSuccessDialog = true
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                        } finally {
+                            isSubmitting = false
                         }
-                    },
-                    modifier = Modifier.weight(1f).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary), shape = RoundedCornerShape(8.dp), enabled = !isSubmitting && latitude != 0.0
-                ) {
-                    if (isSubmitting) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-                    else Text("Submit Report", fontWeight = FontWeight.Bold)
-                }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary), shape = RoundedCornerShape(8.dp), enabled = !isSubmitting
+            ) {
+                if (isSubmitting) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                else Text("Submit Report", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -711,16 +701,11 @@ fun ReportIssueScreen(authService: FirebaseAuthService, userEmail: String, onBac
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TipsScreen(onBack: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Recycling Tips", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Eco Tips", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-            TipCard("Clean your recyclables", "Rinse food containers to avoid contamination.", Icons.Default.CleaningServices)
-            TipCard("Check local guidelines", "Different areas have different recycling rules. Look for local signs.", Icons.Default.Info)
-            TipCard("Reduce & Reuse", "The best way to manage waste is to not create it. Use reusable bags and bottles.", Icons.Default.Loop)
-            TipCard("Compost organics", "Fruit peels and vegetable scraps can be turned into nutrient-rich soil.", Icons.Default.Grass)
-            TipCard("Separate your waste", "Keep plastics, paper, and glass in separate bins for easier processing.", Icons.Default.Category)
-            TipCard("Don't bag recyclables", "Keep items loose in the bin. Plastic bags can jam sorting machinery.", Icons.Default.ShoppingBag)
-            TipCard("Electronic Waste", "Take old batteries and electronics to specialized e-waste collection points.", Icons.Default.Devices)
-            TipCard("Paper Recycling", "Avoid recycling paper that is soaked in grease (like pizza boxes).", Icons.Default.Article)
+            TipCard("Clean your recyclables", "Rinse containers.", Icons.Default.CleaningServices)
+            TipCard("Reduce & Reuse", "Use reusable bags.", Icons.Default.Loop)
+            TipCard("Compost organics", "Fruit peels etc.", Icons.Default.Grass)
         }
     }
 }
@@ -729,7 +714,7 @@ fun TipsScreen(onBack: () -> Unit) {
 fun TipCard(title: String, description: String, icon: ImageVector) {
     Card(modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, color = GreenPrimary.copy(alpha = 0.1f), modifier = Modifier.size(48.dp)) { Icon(icon, null, tint = GreenPrimary, modifier = Modifier.padding(12.dp)) }
+            Icon(icon, null, tint = GreenPrimary, modifier = Modifier.size(32.dp))
             Spacer(Modifier.width(16.dp))
             Column { Text(title, fontWeight = FontWeight.Bold, color = GreenDark); Text(description, fontSize = 14.sp, color = Color.Gray) }
         }
@@ -739,113 +724,27 @@ fun TipCard(title: String, description: String, icon: ImageVector) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RewardsScreen(ecoPoints: Int, onBack: () -> Unit) {
-    val badgeInfo = remember(ecoPoints) {
-        when {
-            ecoPoints >= 300 -> BadgeData("Diamond", Color(0xFFB9F2FF), Icons.Default.Diamond)
-            ecoPoints >= 250 -> BadgeData("Platinum", Color(0xFFE5E4E2), Icons.Default.WorkspacePremium)
-            ecoPoints >= 200 -> BadgeData("Gold", Color(0xFFFFD700), Icons.Default.EmojiEvents)
-            ecoPoints >= 150 -> BadgeData("Silver", Color(0xFFC0C0C0), Icons.Default.Stars)
-            ecoPoints >= 100 -> BadgeData("Bronze", Color(0xFFCD7F32), Icons.Default.MilitaryTech)
-            else -> BadgeData("Eco Starter", Color.Gray, Icons.Default.Person)
-        }
-    }
-
-    val nextMilestone = remember(ecoPoints) {
-        when {
-            ecoPoints < 100 -> 100
-            ecoPoints < 150 -> 150
-            ecoPoints < 200 -> 200
-            ecoPoints < 250 -> 250
-            ecoPoints < 300 -> 300
-            else -> 500 // Max reached
-        }
-    }
-
     Scaffold(topBar = { TopAppBar(title = { Text("Eco Rewards", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().verticalScroll(rememberScrollState())) {
             Card(modifier = Modifier.padding(16.dp).fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(4.dp), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Your Eco Points", color = Color.Gray)
                     Text(ecoPoints.toString(), fontSize = 48.sp, fontWeight = FontWeight.ExtraBold, color = GreenDark)
-                    
-                    Spacer(Modifier.height(16.dp))
-                    
-                    // Badge Display
-                    Surface(
-                        color = badgeInfo.color.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(badgeInfo.icon, contentDescription = null, tint = badgeInfo.color)
-                            Spacer(Modifier.width(8.dp))
-                            Text(badgeInfo.name, fontWeight = FontWeight.Bold, color = GreenDark)
-                        }
-                    }
-
-                    val progress = (ecoPoints.toFloat() / nextMilestone).coerceIn(0f, 1f)
-                    Spacer(Modifier.height(24.dp))
-                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(8.dp), color = GreenPrimary, trackColor = Color.LightGray)
-                    Text("Next Goal: $nextMilestone Points", modifier = Modifier.padding(top = 8.dp), fontSize = 12.sp)
                 }
             }
-
-            Text("Milestones & Badges", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text("Badges", modifier = Modifier.padding(16.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            BadgeListItem("Eco Starter", "Initial Badge", Icons.Default.Person, Color.Gray, true)
             BadgeListItem("Bronze Badge", "100 Points Required", Icons.Default.MilitaryTech, Color(0xFFCD7F32), ecoPoints >= 100)
             BadgeListItem("Silver Badge", "150 Points Required", Icons.Default.Stars, Color(0xFFC0C0C0), ecoPoints >= 150)
-            BadgeListItem("Gold Badge", "200 Points Required", Icons.Default.EmojiEvents, Color(0xFFFFD700), ecoPoints >= 200)
-            BadgeListItem("Platinum Badge", "250 Points Required", Icons.Default.WorkspacePremium, Color(0xFFE5E4E2), ecoPoints >= 250)
-            BadgeListItem("Diamond Badge", "300 Points Required", Icons.Default.Diamond, Color(0xFFB9F2FF), ecoPoints >= 300)
         }
     }
 }
 
 @Composable
 fun BadgeListItem(title: String, subtitle: String, icon: ImageVector, iconColor: Color, isEarned: Boolean) {
-    Card(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth()
-            .alpha(if (isEarned) 1f else 0.6f),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isEarned) Color.White else Color(0xFFF0F0F0)
-        ),
-        elevation = CardDefaults.cardElevation(if (isEarned) 2.dp else 0.dp)
-    ) {
+    Card(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().alpha(if (isEarned) 1f else 0.6f)) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = if (isEarned) iconColor.copy(alpha = 0.1f) else Color.LightGray.copy(alpha = 0.2f),
-                modifier = Modifier.size(50.dp)
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = if (isEarned) iconColor else Color.Gray,
-                    modifier = Modifier.padding(12.dp)
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.Bold, color = if (isEarned) GreenDark else Color.Gray)
-                Text(subtitle, color = Color.Gray, fontSize = 12.sp)
-            }
-            if (isEarned) {
-                Icon(Icons.Default.CheckCircle, contentDescription = "Earned", tint = GreenPrimary)
-            } else {
-                Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color.LightGray, modifier = Modifier.size(20.dp))
-            }
-        }
-    }
-}
-
-data class BadgeData(val name: String, val color: Color, val icon: ImageVector)
-
-@Composable
-fun RewardListItem(title: String, subtitle: String, icon: ImageVector, iconColor: Color) {
-    Card(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(2.dp)) {
-        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(8.dp), color = iconColor.copy(alpha = 0.1f), modifier = Modifier.size(50.dp)) { Icon(icon, null, tint = iconColor, modifier = Modifier.padding(12.dp)) }
+            Icon(icon, null, tint = if (isEarned) iconColor else Color.Gray, modifier = Modifier.size(40.dp))
             Spacer(Modifier.width(16.dp))
             Column { Text(title, fontWeight = FontWeight.Bold); Text(subtitle, color = Color.Gray, fontSize = 12.sp) }
         }
@@ -855,9 +754,62 @@ fun RewardListItem(title: String, subtitle: String, icon: ImageVector, iconColor
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(onBack: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Schedule", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
+    val db = FirebaseDatabase.getInstance().reference
+    val authService = remember { FirebaseAuthService() }
+    val userEmail = authService.getCurrentUser()?.email ?: ""
+    var reports by remember { mutableStateOf<List<ReportItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(userEmail) {
+        if (userEmail.isNotEmpty()) {
+            db.child("reports").orderByChild("userEmail").equalTo(userEmail)
+                .addValueEventListener(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        val list = mutableListOf<ReportItem>()
+                        for (doc in snapshot.children) {
+                            list.add(
+                                ReportItem(
+                                    id = doc.key ?: "",
+                                    userName = doc.child("userEmail").getValue(String::class.java) ?: "Unknown",
+                                    issueType = doc.child("issueType").getValue(String::class.java) ?: "General",
+                                    location = doc.child("location").getValue(String::class.java) ?: "Unknown",
+                                    status = doc.child("status").getValue(String::class.java) ?: "Pending",
+                                    description = doc.child("description").getValue(String::class.java) ?: "",
+                                    timestamp = doc.child("timestamp").getValue(Long::class.java) ?: 0L,
+                                    adminNotes = doc.child("adminNotes").getValue(String::class.java) ?: ""
+                                )
+                            )
+                        }
+                        reports = list.sortedByDescending { it.timestamp }
+                        isLoading = false
+                    }
+                    override fun onCancelled(error: DatabaseError) { isLoading = false }
+                })
+        }
+    }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("My Reports", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
+        Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
+            if (isLoading) { CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally)) }
+            else if (reports.isEmpty()) { Text("No reports found.", color = Color.Gray) }
+            else { reports.forEach { ReportStatusCard(it) } }
+            Spacer(Modifier.height(24.dp))
+            Text("Upcoming Collections", fontWeight = FontWeight.Bold, color = GreenDark)
             ScheduleItem("Tomorrow, 08:00 AM", "Organic Waste", "Scheduled")
+        }
+    }
+}
+
+@Composable
+fun ReportStatusCard(report: ReportItem) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(report.issueType, fontWeight = FontWeight.Bold)
+                Text(report.status, color = if (report.status == "Resolved") GreenPrimary else Color(0xFFFF9800))
+            }
+            Text(report.location, fontSize = 14.sp, color = Color.Gray)
+            Text(report.description, fontSize = 14.sp)
         }
     }
 }

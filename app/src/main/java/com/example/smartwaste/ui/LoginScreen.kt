@@ -87,7 +87,7 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
                     result.onSuccess { user ->
                         isLoading = false
                         Log.d("MainLoginScreen", "Login successful for: ${user.email}")
-                        onLoginSuccess(email)
+                        onLoginSuccess(user.email ?: "")
                     }
                     result.onFailure { exception ->
                         isLoading = false

@@ -25,32 +25,54 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     var currentEmail by remember { mutableStateOf<String?>(null) }
+                    var currentRole by remember { mutableStateOf<String?>(null) }
                     
                     if (currentEmail == null) {
                         // Directly show SmartWasteApp which now starts at the WelcomeScreen (Register/Login options)
                         SmartWasteApp(
-                            onUserLoggedIn = { email: String -> currentEmail = email },
-                            onLogoutRequest = { currentEmail = null }
+                            onUserLoggedIn = { email, role -> 
+                                currentEmail = email
+                                currentRole = role
+                            },
+                            onLogoutRequest = { 
+                                currentEmail = null
+                                currentRole = null
+                            }
                         )
                     } else {
                         val email = currentEmail!!
-                        when {
-                            email.contains("driver", ignoreCase = true) -> {
+                        val role = currentRole ?: "user"
+                        
+                        when (role) {
+                            "driver" -> {
                                 val driverViewModel: DriverViewModel = viewModel()
                                 DriverDashboardScreen(
                                     viewModel = driverViewModel,
-                                    onLogout = { currentEmail = null }
+                                    onLogout = { 
+                                        currentEmail = null
+                                        currentRole = null
+                                    }
                                 )
                             }
-                            email.contains("admin", ignoreCase = true) -> {
+                            "admin" -> {
                                 AdminDashboardScreen(
-                                    onLogout = { currentEmail = null }
+                                    onLogout = { 
+                                        currentEmail = null
+                                        currentRole = null
+                                    }
                                 )
                             }
                             else -> {
                                 SmartWasteApp(
                                     initialEmail = email,
-                                    onLogoutRequest = { currentEmail = null }
+                                    onUserLoggedIn = { e, r -> 
+                                        currentEmail = e
+                                        currentRole = r
+                                    },
+                                    onLogoutRequest = { 
+                                        currentEmail = null
+                                        currentRole = null
+                                    }
                                 )
                             }
                         }

@@ -54,6 +54,8 @@ dependencies {
     implementation(libs.play.services.maps)
     implementation(libs.play.services.location)
     implementation(libs.coil.compose)
+    implementation(libs.vico.compose)
+    implementation(libs.vico.compose.m3)
 
     // Firebase
     implementation(platform(libs.firebase.bom))
@@ -62,9 +64,8 @@ dependencies {
     implementation(libs.firebase.auth)
     implementation(libs.firebase.storage)
     // Add this line for Firebase Realtime Database
-    implementation(libs.firebase.database) // Assuming 'firebase.database' is defined in your libs.versions.toml
-    // If 'firebase.database' is not defined in libs.versions.toml, use:
-    // implementation("com.google.firebase:firebase-database")
+    implementation(libs.firebase.database)
+    implementation(libs.firebase.messaging)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

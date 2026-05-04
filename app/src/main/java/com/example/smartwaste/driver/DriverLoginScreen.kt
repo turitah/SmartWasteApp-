@@ -12,6 +12,16 @@ import androidx.compose.ui.unit.dp
 fun DriverLoginScreen(viewModel: DriverViewModel, onLoginSuccess: () -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    
+    val isLoading by viewModel.isLoading.collectAsState()
+    val loginStatus by viewModel.loginStatus.collectAsState()
+
+    LaunchedEffect(loginStatus) {
+        if (loginStatus?.isSuccess == true) {
+            onLoginSuccess()
+            viewModel.clearLoginStatus()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -30,7 +40,8 @@ fun DriverLoginScreen(viewModel: DriverViewModel, onLoginSuccess: () -> Unit) {
             value = email,
             onValueChange = { email = it },
             label = { Text("Email or Phone") },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading
         )
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -39,18 +50,38 @@ fun DriverLoginScreen(viewModel: DriverViewModel, onLoginSuccess: () -> Unit) {
             onValueChange = { password = it },
             label = { Text("Password") },
             visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading
         )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (loginStatus?.isFailure == true) {
+            Text(
+                text = loginStatus?.exceptionOrNull()?.message ?: "Login failed",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.align(Alignment.Start)
+            )
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
                 viewModel.login(email, password)
-                onLoginSuccess()
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading && email.isNotBlank() && password.isNotBlank()
         ) {
-            Text("Login")
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Text("Login")
+            }
         }
     }
 }
