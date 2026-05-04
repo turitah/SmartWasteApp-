@@ -21,7 +21,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -32,126 +31,88 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 enum class AdminSubScreen {
-    Dashboard, Drivers, MapView, Schedule, Reports, Bins
+    Dashboard, Drivers, MapView, Reports, Bins
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AdminDashboardScreen(onLogout: () -> Unit, viewModel: AdminViewModel = viewModel()) {
+fun AdminDashboardScreen(
+    adminName: String = "Admin",
+    adminEmail: String = "admin@smartwaste.com",
+    onLogout: () -> Unit,
+    viewModel: AdminViewModel = viewModel()
+) {
     val reports by viewModel.reports.collectAsState()
     val drivers = viewModel.drivers
     val bins = viewModel.bins
-    val schedules = viewModel.schedules
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var currentSubScreen by remember { mutableStateOf(AdminSubScreen.Dashboard) }
     var selectedReport by remember { mutableStateOf<ReportItem?>(null) }
-    var showMenu by remember { mutableStateOf(false) }
+    var binToAssign by remember { mutableStateOf<BinData?>(null) }
+    
+    // Dialog states for Manage Drivers
+    var showAddDriverDialog by remember { mutableStateOf(false) }
+    var driverToEdit by remember { mutableStateOf<Driver?>(null) }
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
     val unreadReportCount = reports.count { it.status == "Pending" }
 
+    val greeting = remember {
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        when (hour) {
+            in 0..11 -> "Good Morning"
+            in 12..16 -> "Good Afternoon"
+            else -> "Good Evening"
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(modifier = Modifier.width(300.dp)) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(GreenPrimary)
-                        .padding(24.dp)
+                        .padding(32.dp)
                 ) {
-                    Column {
-                        Icon(Icons.Default.AccountCircle, null, tint = Color.White, modifier = Modifier.size(48.dp))
-                        Spacer(Modifier.height(8.dp))
-                        Text("System Admin", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("admin@smartwaste.com", color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.size(80.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Person,
+                                null,
+                                tint = Color.White,
+                                modifier = Modifier.padding(16.dp).size(48.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text(adminName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(adminEmail, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Dashboard, null) },
-                    label = { Text("Dashboard") },
-                    selected = currentSubScreen == AdminSubScreen.Dashboard,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.Dashboard
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                Spacer(Modifier.height(16.dp))
+                PaddingValues(16.dp).let {
+                    Text("Account Information", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                }
+                ListItem(
+                    headlineContent = { Text("Role") },
+                    supportingContent = { Text("Super Administrator") },
+                    leadingContent = { Icon(Icons.Default.AdminPanelSettings, null) }
                 )
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.People, null) },
-                    label = { Text("Manage Drivers") },
-                    selected = currentSubScreen == AdminSubScreen.Drivers,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.Drivers
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Map, null) },
-                    label = { Text("Live Map") },
-                    selected = currentSubScreen == AdminSubScreen.MapView,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.MapView
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.DateRange, null) },
-                    label = { Text("Schedules") },
-                    selected = currentSubScreen == AdminSubScreen.Schedule,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.Schedule
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Delete, null) },
-                    label = { Text("Waste Bins") },
-                    selected = currentSubScreen == AdminSubScreen.Bins,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.Bins
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                NavigationDrawerItem(
-                    icon = {
-                        BadgedBox(
-                            badge = {
-                                if (unreadReportCount > 0) {
-                                    Badge { Text(unreadReportCount.toString()) }
-                                }
-                            }
-                        ) {
-                            Icon(Icons.Default.Report, null)
-                        }
-                    },
-                    label = { Text("User Reports") },
-                    selected = currentSubScreen == AdminSubScreen.Reports,
-                    onClick = {
-                        currentSubScreen = AdminSubScreen.Reports
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                Spacer(Modifier.weight(1f))
-                HorizontalDivider()
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color.Red) },
-                    label = { Text("Logout", color = Color.Red) },
-                    selected = false,
-                    onClick = { onLogout() },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                ListItem(
+                    headlineContent = { Text("Permissions") },
+                    supportingContent = { Text("Full Access") },
+                    leadingContent = { Icon(Icons.Default.VerifiedUser, null) }
                 )
             }
         }
@@ -161,83 +122,146 @@ fun AdminDashboardScreen(onLogout: () -> Unit, viewModel: AdminViewModel = viewM
             topBar = {
                 TopAppBar(
                     title = {
-                        Text(
-                            when (currentSubScreen) {
-                                AdminSubScreen.Dashboard -> "Admin Dashboard"
-                                AdminSubScreen.Drivers -> "Manage Drivers"
-                                AdminSubScreen.MapView -> "Live Bin Map"
-                                AdminSubScreen.Schedule -> "Pickup Schedule"
-                                AdminSubScreen.Reports -> "User Reports"
-                                AdminSubScreen.Bins -> "Waste Bins"
-                            },
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column {
+                            Text(
+                                "$greeting, $adminName",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color.White
+                            )
+                            Text(
+                                when (currentSubScreen) {
+                                    AdminSubScreen.Dashboard -> "Overview"
+                                    AdminSubScreen.Drivers -> "Manage Drivers"
+                                    AdminSubScreen.MapView -> "Live Bin Map"
+                                    AdminSubScreen.Reports -> "User Reports"
+                                    AdminSubScreen.Bins -> "Waste Bins"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.7f)
+                            )
+                        }
                     },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, "Menu", tint = Color.White)
+                            Icon(Icons.Default.Menu, "Profile", tint = Color.White)
                         }
                     },
                     actions = {
-                        Box {
-                            IconButton(onClick = { showMenu = !showMenu }) {
-                                Icon(Icons.Default.MoreVert, null, tint = Color.White)
-                            }
-                            DropdownMenu(
-                                expanded = showMenu,
-                                onDismissRequest = { showMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Dashboard") },
-                                    onClick = {
-                                        currentSubScreen = AdminSubScreen.Dashboard
-                                        showMenu = false
-                                    },
-                                    leadingIcon = { Icon(Icons.Default.Dashboard, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Reports") },
-                                    onClick = {
-                                        currentSubScreen = AdminSubScreen.Reports
-                                        showMenu = false
-                                    },
-                                    leadingIcon = { Icon(Icons.Default.Report, null) }
-                                )
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("Logout", color = Color.Red) },
-                                    onClick = {
-                                        showMenu = false
-                                        onLogout()
-                                    },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color.Red) }
-                                )
-                            }
+                        IconButton(onClick = onLogout) {
+                            Icon(Icons.AutoMirrored.Filled.Logout, "Logout", tint = Color.White)
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenPrimary)
                 )
+            },
+            bottomBar = {
+                NavigationBar(
+                    containerColor = Color.White,
+                    tonalElevation = 8.dp
+                ) {
+                    val navItems = listOf(
+                        Triple(AdminSubScreen.Dashboard, Icons.Default.Dashboard, "Home"),
+                        Triple(AdminSubScreen.Drivers, Icons.Default.People, "Drivers"),
+                        Triple(AdminSubScreen.MapView, Icons.Default.Map, "Map"),
+                        Triple(AdminSubScreen.Reports, Icons.Default.Report, "Reports"),
+                        Triple(AdminSubScreen.Bins, Icons.Default.Delete, "Bins")
+                    )
+                    
+                    navItems.forEach { (screen, icon, label) ->
+                        NavigationBarItem(
+                            icon = {
+                                if (screen == AdminSubScreen.Reports && unreadReportCount > 0) {
+                                    BadgedBox(badge = { Badge { Text(unreadReportCount.toString()) } }) {
+                                        Icon(icon, null)
+                                    }
+                                } else {
+                                    Icon(icon, null)
+                                }
+                            },
+                            label = { Text(label, fontSize = 10.sp) },
+                            selected = currentSubScreen == screen,
+                            onClick = { currentSubScreen = screen },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = GreenPrimary,
+                                selectedTextColor = GreenPrimary,
+                                unselectedIconColor = Color.Gray,
+                                unselectedTextColor = Color.Gray,
+                                indicatorColor = GreenPrimary.copy(alpha = 0.1f)
+                            )
+                        )
+                    }
+                }
+            },
+            floatingActionButton = {
+                if (currentSubScreen == AdminSubScreen.Drivers) {
+                    FloatingActionButton(
+                        onClick = { showAddDriverDialog = true },
+                        containerColor = GreenPrimary,
+                        contentColor = Color.White
+                    ) {
+                        Icon(Icons.Default.Add, "Add Driver")
+                    }
+                }
             }
         ) { padding ->
-            Box(modifier = Modifier.padding(padding)) {
+            Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 when (currentSubScreen) {
                     AdminSubScreen.Dashboard -> DashboardContent(drivers.size, bins.size, unreadReportCount)
-                    AdminSubScreen.Drivers -> ManageDriversScreen(drivers)
+                    AdminSubScreen.Drivers -> ManageDriversScreen(
+                        drivers = drivers,
+                        onDelete = { viewModel.deleteDriver(it) },
+                        onEdit = { driverToEdit = it }
+                    )
                     AdminSubScreen.Reports -> ManageReportsScreen(reports) { selectedReport = it }
-                    AdminSubScreen.Bins -> ManageBinsScreen(bins)
-                    AdminSubScreen.Schedule -> AdminScheduleScreen(schedules)
+                    AdminSubScreen.Bins -> ManageBinsScreen(
+                        bins = bins,
+                        onAssign = { binToAssign = it }
+                    )
                     AdminSubScreen.MapView -> AdminMapContent(bins)
                 }
             }
         }
     }
 
+    if (showAddDriverDialog) {
+        DriverActionDialog(
+            onDismiss = { showAddDriverDialog = false },
+            onConfirm = { name, truck ->
+                viewModel.addDriver(Driver(name, truck, "Offline", Color.Gray, "https://randomuser.me/api/portraits/men/${(1..99).random()}.jpg"))
+                showAddDriverDialog = false
+            }
+        )
+    }
+
+    driverToEdit?.let { driver ->
+        DriverActionDialog(
+            driver = driver,
+            onDismiss = { driverToEdit = null },
+            onConfirm = { name, truck ->
+                viewModel.updateDriver(driver.name, driver.copy(name = name, truck = truck))
+                driverToEdit = null
+            }
+        )
+    }
+
     selectedReport?.let { report ->
         ReportDetailDialog(
             report = report,
             onDismiss = { selectedReport = null },
-            onResolve = { viewModel.markAsResolved(report.id) }
+            onResolve = { viewModel.markAsResolved(report.id) },
+            onDelete = { viewModel.deleteReport(report.id) }
+        )
+    }
+
+    binToAssign?.let { bin ->
+        AssignDriverDialog(
+            bin = bin,
+            drivers = drivers,
+            onDismiss = { binToAssign = null },
+            onConfirm = { driverName ->
+                viewModel.assignDriverToBin(bin.id, driverName)
+                binToAssign = null
+            }
         )
     }
 }
@@ -251,16 +275,16 @@ fun DashboardContent(driverCount: Int, binCount: Int, reportCount: Int) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text("Overview", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Dashboard Overview", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                StatCard("Drivers", driverCount.toString(), Icons.Default.People, Modifier.weight(1f))
-                StatCard("Bins", binCount.toString(), Icons.Default.Delete, Modifier.weight(1f))
+                StatCard("Total Drivers", driverCount.toString(), Icons.Default.People, Modifier.weight(1f))
+                StatCard("Total Bins", binCount.toString(), Icons.Default.Delete, Modifier.weight(1f))
             }
         }
         item {
-            StatCard("Pending Reports", reportCount.toString(), Icons.Default.Warning, Modifier.fillMaxWidth(), color = Color.Red)
+            StatCard("Active Reports", reportCount.toString(), Icons.Default.Warning, Modifier.fillMaxWidth(), color = Color(0xFFF44336))
         }
     }
 }
@@ -270,7 +294,8 @@ fun StatCard(title: String, value: String, icon: ImageVector, modifier: Modifier
     Card(
         modifier = modifier,
         elevation = CardDefaults.cardElevation(4.dp),
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Column(Modifier.padding(16.dp)) {
             Icon(icon, null, tint = color, modifier = Modifier.size(24.dp))
@@ -282,7 +307,11 @@ fun StatCard(title: String, value: String, icon: ImageVector, modifier: Modifier
 }
 
 @Composable
-fun ManageDriversScreen(drivers: List<Driver>) {
+fun ManageDriversScreen(
+    drivers: List<Driver>,
+    onDelete: (Driver) -> Unit,
+    onEdit: (Driver) -> Unit
+) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -291,7 +320,8 @@ fun ManageDriversScreen(drivers: List<Driver>) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(2.dp),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White)
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -301,31 +331,86 @@ fun ManageDriversScreen(drivers: List<Driver>) {
                         model = driver.profileImage,
                         contentDescription = null,
                         modifier = Modifier
-                            .size(50.dp)
+                            .size(60.dp)
                             .clip(CircleShape),
                         contentScale = ContentScale.Crop
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(driver.name, fontWeight = FontWeight.Bold)
+                        Text(driver.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         Text("Truck: ${driver.truck}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text("Bins: ${driver.assignedBins}", style = MaterialTheme.typography.labelSmall, color = GreenPrimary)
                     }
-                    Surface(
-                        color = driver.statusColor.copy(alpha = 0.1f),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Text(
-                            driver.status,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            color = driver.statusColor,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Surface(
+                            color = driver.statusColor.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text(
+                                driver.status,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = driver.statusColor,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row {
+                            IconButton(onClick = { onEdit(driver) }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Edit, "Edit", tint = GreenPrimary, modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(onClick = { onDelete(driver) }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Delete, "Delete", tint = Color.Red, modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+fun DriverActionDialog(
+    driver: Driver? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String) -> Unit
+) {
+    var name by remember { mutableStateOf(driver?.name ?: "") }
+    var truck by remember { mutableStateOf(driver?.truck ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (driver == null) "Add New Driver" else "Edit Driver") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Driver Name") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = truck,
+                    onValueChange = { truck = it },
+                    label = { Text("Truck Number") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name, truck) },
+                enabled = name.isNotBlank() && truck.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+            ) {
+                Text("Confirm")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
@@ -360,7 +445,10 @@ fun ManageReportsScreen(reports: List<ReportItem>, onReportClick: (ReportItem) -
 }
 
 @Composable
-fun ManageBinsScreen(bins: List<BinData>) {
+fun ManageBinsScreen(
+    bins: List<BinData>,
+    onAssign: (BinData) -> Unit
+) {
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -369,7 +457,8 @@ fun ManageBinsScreen(bins: List<BinData>) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(2.dp),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White)
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -378,7 +467,17 @@ fun ManageBinsScreen(bins: List<BinData>) {
                     Column(Modifier.weight(1f)) {
                         Text(bin.id, fontWeight = FontWeight.Bold)
                         Text(bin.location, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                        Text("Assigned: ${bin.assignedDriver}", style = MaterialTheme.typography.labelSmall, color = GreenPrimary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Assigned: ${bin.assignedDriver}", style = MaterialTheme.typography.labelSmall, color = GreenPrimary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Change",
+                                modifier = Modifier.clickable { onAssign(bin) },
+                                color = GreenPrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                     Text(
                         "${bin.fillLevel}%",
@@ -393,31 +492,50 @@ fun ManageBinsScreen(bins: List<BinData>) {
 }
 
 @Composable
-fun AdminScheduleScreen(schedules: List<ScheduleData>) {
-    LazyColumn(
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        items(schedules) { schedule ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(2.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                ListItem(
-                    headlineContent = { Text(schedule.date, fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("${schedule.shift} • ${schedule.driverName}") },
-                    trailingContent = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.LocalShipping, null, modifier = Modifier.size(16.dp), tint = Color.Gray)
-                            Spacer(Modifier.width(4.dp))
-                            Text(schedule.vehicle, style = MaterialTheme.typography.labelSmall)
-                        }
+fun AssignDriverDialog(
+    bin: BinData,
+    drivers: List<Driver>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var selectedDriver by remember { mutableStateOf(bin.assignedDriver) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Assign Driver to ${bin.id}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Select a driver to handle this bin:")
+                drivers.forEach { driver ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedDriver = driver.name }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedDriver == driver.name,
+                            onClick = { selectedDriver = driver.name }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(driver.name)
                     }
-                )
+                }
             }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedDriver) },
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+            ) {
+                Text("Assign")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
-    }
+    )
 }
 
 @Composable
@@ -446,7 +564,7 @@ fun AdminMapContent(bins: List<BinData>) {
 }
 
 @Composable
-fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onResolve: () -> Unit) {
+fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onResolve: () -> Unit, onDelete: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(24.dp),
@@ -470,15 +588,23 @@ fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onResolve: () 
             }
         },
         confirmButton = {
-            if (report.status == "Pending") {
-                Button(
-                    onClick = {
-                        onResolve()
-                        onDismiss()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
-                ) {
-                    Text("Mark Resolved")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (report.status == "Pending") {
+                    Button(
+                        onClick = {
+                            onResolve()
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+                    ) {
+                        Text("Resolve")
+                    }
+                }
+                IconButton(onClick = {
+                    onDelete()
+                    onDismiss()
+                }) {
+                    Icon(Icons.Default.Delete, "Delete", tint = Color.Red)
                 }
             }
         },

@@ -226,6 +226,7 @@ fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, Strin
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
+    var resetMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -264,21 +265,50 @@ fun LoginScreen(authService: FirebaseAuthService, onLoginSuccess: (String, Strin
         )
         
         Spacer(Modifier.height(48.dp))
-        AuthTextField(value = email, onValueChange = { email = it; errorMessage = "" }, label = "Email", icon = Icons.Default.Email)
+        AuthTextField(value = email, onValueChange = { email = it; errorMessage = ""; resetMessage = "" }, label = "Email", icon = Icons.Default.Email)
         Spacer(Modifier.height(16.dp))
-        AuthTextField(value = password, onValueChange = { password = it; errorMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
+        AuthTextField(value = password, onValueChange = { password = it; errorMessage = ""; resetMessage = "" }, label = "Password", icon = Icons.Default.Lock, isPassword = true)
         
+        TextButton(
+            onClick = {
+                if (email.isBlank()) {
+                    errorMessage = "Please enter your email to reset password"
+                    return@TextButton
+                }
+                scope.launch {
+                    authService.sendPasswordResetEmail(email)
+                        .onSuccess {
+                            resetMessage = "Password reset email sent to $email"
+                            errorMessage = ""
+                        }
+                        .onFailure { e ->
+                            errorMessage = e.message ?: "Failed to send reset email"
+                            resetMessage = ""
+                        }
+                }
+            },
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Text("Forgot Password?", color = GreenDark, fontWeight = FontWeight.Medium)
+        }
+
         if (errorMessage.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
         }
 
-        Spacer(Modifier.height(32.dp))
+        if (resetMessage.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(resetMessage, color = GreenPrimary, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        }
+
+        Spacer(Modifier.height(24.dp))
         Button(
             onClick = { 
                 scope.launch { 
                     isLoading = true
                     errorMessage = ""
+                    resetMessage = ""
                     try {
                         val result = authService.login(email, password)
                         result.onSuccess { user ->

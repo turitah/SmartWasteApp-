@@ -34,7 +34,9 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
+    var isResetLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
+    var successMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val authService = remember { FirebaseAuthService() }
 
@@ -71,12 +73,43 @@ fun MainLoginScreen(onLoginSuccess: (String) -> Unit) {
             isPassword = true
         )
         
-        if (errorMessage.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        TextButton(
+            onClick = {
+                if (email.isBlank()) {
+                    errorMessage = "Please enter your email to reset password"
+                } else {
+                    scope.launch {
+                        isResetLoading = true
+                        errorMessage = ""
+                        val result = authService.sendPasswordResetEmail(email)
+                        isResetLoading = false
+                        result.onSuccess {
+                            successMessage = "Password reset email sent!"
+                        }.onFailure {
+                            errorMessage = it.message ?: "Failed to send reset email"
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.align(Alignment.End),
+            enabled = !isResetLoading
+        ) {
+            if (isResetLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Text("Forgot Password?", color = GreenPrimary, fontSize = 14.sp)
+            }
         }
         
-        Spacer(Modifier.height(32.dp))
+        if (errorMessage.isNotEmpty()) {
+            Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        }
+
+        if (successMessage.isNotEmpty()) {
+            Text(successMessage, color = GreenPrimary, fontSize = 12.sp, modifier = Modifier.align(Alignment.Start))
+        }
+        
+        Spacer(Modifier.height(24.dp))
         
         Button(
             onClick = {

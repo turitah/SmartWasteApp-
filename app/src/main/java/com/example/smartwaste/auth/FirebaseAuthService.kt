@@ -120,4 +120,26 @@ class FirebaseAuthService {
             null
         }
     }
+
+    /**
+     * Send password reset email
+     */
+    suspend fun sendPasswordResetEmail(email: String): Result<Unit> {
+        return try {
+            val cleanEmail = email.trim()
+            if (cleanEmail.isEmpty()) {
+                return Result.failure(Exception("Please enter your email address"))
+            }
+            auth.sendPasswordResetEmail(cleanEmail).await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e("FirebaseAuth", "Password reset error: ${e.message}", e)
+            val customMessage = if (e.message?.contains("user-not-found") == true) {
+                "No account found with this email."
+            } else {
+                e.localizedMessage ?: "Failed to send reset email"
+            }
+            Result.failure(Exception(customMessage))
+        }
+    }
 }

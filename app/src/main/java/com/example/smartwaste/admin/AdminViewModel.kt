@@ -62,6 +62,42 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
     init {
         listenToReports()
         listenToBins()
+        listenToDrivers()
+    }
+
+    private fun listenToDrivers() {
+        db.child("users").orderByChild("role").equalTo("driver")
+            .addValueEventListener(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val driverList = mutableListOf<Driver>()
+                    for (doc in snapshot.children) {
+                        val name = doc.child("fullName").getValue(String::class.java) ?: "Unknown Driver"
+                        driverList.add(
+                            Driver(
+                                name = name,
+                                truck = "Truck #00${(1..9).random()}", // In a real app, this would be in the profile
+                                status = "Online",
+                                statusColor = Color(0xFF4CAF50),
+                                profileImage = "https://randomuser.me/api/portraits/men/${(1..99).random()}.jpg",
+                                assignedBins = "None" // This will be calculated below
+                            )
+                        )
+                    }
+                    if (driverList.isNotEmpty()) {
+                        drivers = driverList
+                        syncDriverAssignments()
+                    }
+                }
+
+                override fun onCancelled(error: DatabaseError) {}
+            })
+    }
+
+    private fun syncDriverAssignments() {
+        drivers = drivers.map { driver ->
+            val assigned = bins.filter { it.assignedDriver == driver.name }.map { it.id }
+            driver.copy(assignedBins = if (assigned.isEmpty()) "None" else assigned.joinToString(", "))
+        }
     }
 
     private fun listenToBins() {
@@ -92,17 +128,6 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     bins = binList
-                    
-                    // Trigger notifications for high fill levels
-                    if (initialLoadComplete) {
-                        binList.forEach { bin ->
-                            if (bin.fillLevel > 90) {
-                                // In a real app, this would be a server-side trigger
-                                // For this demo, we can show a local notification or UI alert
-                                // For now, we'll use the existing report-style flow or similar
-                            }
-                        }
-                    }
                 }
             }
 
@@ -131,12 +156,10 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
                 
                 val sortedList = reportList.sortedByDescending { it.timestamp }
                 
-                // Detect new reports for notification
                 if (initialLoadComplete) {
                     val currentIds = _reports.value.map { it.id }.toSet()
                     sortedList.forEach { report ->
                         if (report.id !in currentIds && report.status == "Pending") {
-                            // This is a new incoming report
                             _newReportEvent.tryEmit(report)
                         }
                     }
@@ -161,23 +184,8 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
         db.child("reports").child(reportId).updateChildren(updates)
     }
 
-    fun updateReportNotes(reportId: String, notes: String) {
-        db.child("reports").child(reportId).child("adminNotes").setValue(notes)
-    }
-
     fun deleteReport(reportId: String) {
         db.child("reports").child(reportId).removeValue()
-    }
-
-    fun markReportAsViewed(reportId: String) {
-        viewedReportIds = viewedReportIds + reportId
-        prefs.edit().putStringSet("viewed_reports", viewedReportIds).apply()
-    }
-
-    fun clearNotifications() {
-        val pendingIds = _reports.value.filter { it.status == "Pending" }.map { it.id }.toSet()
-        viewedReportIds = viewedReportIds + pendingIds
-        prefs.edit().putStringSet("viewed_reports", viewedReportIds).apply()
     }
 
     fun addDriver(driver: Driver) {
@@ -186,6 +194,10 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateDriver(oldName: String, updated: Driver) {
         drivers = drivers.map { if (it.name == oldName) updated else it }
+    }
+
+    fun deleteDriver(driver: Driver) {
+        drivers = drivers.filter { it.name != driver.name }
     }
 
     fun addBin(bin: BinData) {
@@ -197,16 +209,6 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
             db.child("bins").child(oldId).removeValue()
         }
         db.child("bins").child(updated.id).setValue(updated)
-        
-        // Automatically update driver assignments if the bin ID changed
-        if (oldId != updated.id) {
-            drivers = drivers.map { driver ->
-                val updatedAssignments = driver.assignedBins.split(", ")
-                    .map { if (it == oldId) updated.id else it }
-                    .joinToString(", ")
-                driver.copy(assignedBins = updatedAssignments)
-            }
-        }
     }
 
     fun deleteBin(binId: String) {
@@ -217,11 +219,38 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
         schedules = schedules + schedule
     }
 
-    fun updateSchedule(oldDate: String, updated: ScheduleData) {
-        schedules = schedules.map { if (it.date == oldDate) updated else it }
-    }
+    fun assignDriverToBin(binId: String, driverName: String) {
+        // 1. Update bin in Firebase
+        val bin = bins.find { it.id == binId } ?: return
+        val updatedBin = bin.copy(assignedDriver = driverName)
+        updateBin(binId, updatedBin)
 
-    fun deleteSchedule(schedule: ScheduleData) {
-        schedules = schedules.filter { it != schedule }
+        // 2. Create a task in "assigned_tasks" for the Driver to see
+        val taskData = hashMapOf(
+            "driverName" to driverName,
+            "binId" to binId,
+            "customerName" to "Waste Bin $binId",
+            "address" to bin.location,
+            "wasteType" to "General Waste",
+            "shift" to "Immediate Pickup",
+            "isCompleted" to false,
+            "latitude" to bin.latitude,
+            "longitude" to bin.longitude,
+            "timestamp" to System.currentTimeMillis()
+        )
+        db.child("assigned_tasks").push().setValue(taskData)
+
+        // 3. Send a notification to the driver
+        val notificationData = hashMapOf(
+            "title" to "New Task Assigned",
+            "message" to "You have been assigned to collect bin $binId at ${bin.location}.",
+            "timestamp" to System.currentTimeMillis().toString(),
+            "isRead" to false,
+            "type" to "new_assignment"
+        )
+        db.child("notifications").child(driverName).push().setValue(notificationData)
+
+        // 4. Update local drivers state for immediate UI feedback
+        syncDriverAssignments()
     }
 }

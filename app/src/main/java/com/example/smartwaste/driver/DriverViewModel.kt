@@ -158,14 +158,30 @@ class DriverViewModel : ViewModel() {
     }
 
     fun loadNotifications() {
-        viewModelScope.launch {
-            val dummyNotifications = listOf(
-                NotificationItem(1, "New Assignment", "You have new pickups added to your route", "8:00 AM", false, "new_assignment"),
-                NotificationItem(2, "System Update", "Welcome to the new SmartWaste Driver portal", "7:30 AM", true, "route_change")
-            )
-            _notifications.value = dummyNotifications
-            _showNotificationBadge.value = dummyNotifications.any { !it.isRead }
-        }
+        val name = _driverName.value
+        if (name == "Driver") return
+
+        db.child("notifications").child(name).addValueEventListener(object : com.google.firebase.database.ValueEventListener {
+            override fun onDataChange(snapshot: com.google.firebase.database.DataSnapshot) {
+                val notificationList = mutableListOf<NotificationItem>()
+                for (doc in snapshot.children) {
+                    notificationList.add(
+                        NotificationItem(
+                            id = doc.key.hashCode(),
+                            title = doc.child("title").getValue(String::class.java) ?: "Notification",
+                            message = doc.child("message").getValue(String::class.java) ?: "",
+                            timestamp = doc.child("timestamp").getValue(String::class.java) ?: "",
+                            isRead = doc.child("isRead").getValue(Boolean::class.java) ?: false,
+                            type = doc.child("type").getValue(String::class.java) ?: "info"
+                        )
+                    )
+                }
+                _notifications.value = notificationList.reversed()
+                _showNotificationBadge.value = notificationList.any { !it.isRead }
+            }
+
+            override fun onCancelled(error: com.google.firebase.database.DatabaseError) {}
+        })
     }
 
     fun markNotificationRead(notificationId: Int) {
@@ -254,6 +270,13 @@ class DriverViewModel : ViewModel() {
 
     fun logout() {
         authService.logout()
+    }
+
+    fun resetPassword(email: String, onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            val result = authService.sendPasswordResetEmail(email)
+            onResult(result)
+        }
     }
 
     fun getDailyEarnings(): Double {
