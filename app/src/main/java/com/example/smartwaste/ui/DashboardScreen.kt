@@ -60,6 +60,8 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * OOP: Abstraction
@@ -527,13 +529,21 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
                         try {
                             val geocoder = Geocoder(context, Locale.getDefault())
                             val addresses = withContext(Dispatchers.IO) {
-                                geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                    suspendCoroutine { continuation ->
+                                        geocoder.getFromLocation(loc.latitude, loc.longitude, 1) { addresses ->
+                                            continuation.resume(addresses)
+                                        }
+                                    }
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                                }
                             }
-                            if (!addresses.isNullOrEmpty()) {
-                                val address = addresses[0]
-                                location = address.getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                            location = if (!addresses.isNullOrEmpty()) {
+                                addresses[0].getAddressLine(0) ?: "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                             } else {
-                                location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
+                                "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
                             }
                         } catch (_: Exception) {
                             location = "Lat: ${loc.latitude}, Lon: ${loc.longitude}"
@@ -783,7 +793,9 @@ fun HistoryScreen(onBack: () -> Unit) {
                         reports = list.sortedByDescending { it.timestamp }
                         isLoading = false
                     }
-                    override fun onCancelled(error: DatabaseError) { isLoading = false }
+                    override fun onCancelled(error: DatabaseError) {
+                        isLoading = false
+                    }
                 })
         }
     }
@@ -799,14 +811,26 @@ fun HistoryScreen(onBack: () -> Unit) {
         }
     }
 }
-
 @Composable
 fun ReportStatusCard(report: ReportItem) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    val statusColor = when (report.status) {
+        "Resolved" -> Color(0xFF4CAF50)
+        "Pending" -> Color(0xFFFF9800)
+        else -> Color.Gray
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(2.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(report.issueType, fontWeight = FontWeight.Bold)
-                Text(report.status, color = if (report.status == "Resolved") GreenPrimary else Color(0xFFFF9800))
+                Text(report.status, color = statusColor)
             }
             Text(report.location, fontSize = 14.sp, color = Color.Gray)
             Text(report.description, fontSize = 14.sp)
