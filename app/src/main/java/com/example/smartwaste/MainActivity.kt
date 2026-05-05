@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
                             }
                             "admin" -> {
                                 AdminDashboardScreen(
+                                    adminEmail = email,
                                     onLogout = { 
                                         currentEmail = null
                                         currentRole = null

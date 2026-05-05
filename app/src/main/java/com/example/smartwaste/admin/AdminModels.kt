@@ -3,6 +3,7 @@ package com.example.smartwaste.admin
 import androidx.compose.ui.graphics.Color
 
 data class Driver(
+    val id: String = "",
     val name: String,
     val truck: String,
     val status: String,
@@ -35,5 +36,7 @@ data class ReportItem(
     val status: String = "Pending",
     val issueType: String = "General",
     val timestamp: Long = 0L,
-    val adminNotes: String = ""
+    val adminNotes: String = "",
+    val wasteType: String = "",
+    val priority: String = "Normal"
 )

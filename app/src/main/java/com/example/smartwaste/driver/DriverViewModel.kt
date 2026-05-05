@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.smartwaste.auth.FirebaseAuthService
+import com.google.android.gms.maps.model.LatLng
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +39,7 @@ data class DriverStats(
 
 data class NotificationItem(
     val id: Int,
+    val dbKey: String = "",
     val title: String,
     val message: String,
     val timestamp: String,
@@ -71,6 +73,12 @@ class DriverViewModel : ViewModel() {
 
     private val _driverName = MutableStateFlow("Driver")
     val driverName: StateFlow<String> = _driverName.asStateFlow()
+
+    private val _driverLocation = MutableStateFlow<LatLng?>(null)
+    val driverLocation: StateFlow<LatLng?> = _driverLocation.asStateFlow()
+
+    private val _activeTask = MutableStateFlow<PickupTask?>(null)
+    val activeTask: StateFlow<PickupTask?> = _activeTask.asStateFlow()
 
     private val db = FirebaseDatabase.getInstance().reference
     private val authService = FirebaseAuthService()
@@ -115,6 +123,9 @@ class DriverViewModel : ViewModel() {
                                 customerName = doc.child("customerName").getValue(String::class.java) ?: "Pickup",
                                 address = doc.child("address").getValue(String::class.java) ?: "No Address",
                                 wasteType = doc.child("wasteType").getValue(String::class.java) ?: "General",
+                                phoneNumber = doc.child("phoneNumber").getValue(String::class.java) ?: "0700000000",
+                                latitude = doc.child("latitude").getValue(Double::class.java) ?: 0.0,
+                                longitude = doc.child("longitude").getValue(Double::class.java) ?: 0.0,
                                 eta = doc.child("shift").getValue(String::class.java) ?: "TBD",
                                 isCompleted = doc.child("isCompleted").getValue(Boolean::class.java) ?: false
                             )
@@ -168,6 +179,7 @@ class DriverViewModel : ViewModel() {
                     notificationList.add(
                         NotificationItem(
                             id = doc.key.hashCode(),
+                            dbKey = doc.key ?: "",
                             title = doc.child("title").getValue(String::class.java) ?: "Notification",
                             message = doc.child("message").getValue(String::class.java) ?: "",
                             timestamp = doc.child("timestamp").getValue(String::class.java) ?: "",
@@ -184,18 +196,51 @@ class DriverViewModel : ViewModel() {
         })
     }
 
-    fun markNotificationRead(notificationId: Int) {
-        val updated = _notifications.value.map { n ->
-            if (n.id == notificationId) n.copy(isRead = true) else n
+    fun clearNotification(notificationId: Int) {
+        val name = _driverName.value
+        if (name == "Driver") return
+        
+        val notification = _notifications.value.find { it.id == notificationId } ?: return
+        if (notification.dbKey.isEmpty()) return
+
+        viewModelScope.launch {
+            try {
+                db.child("notifications").child(name).child(notification.dbKey).removeValue().await()
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Error clearing notification", e)
+            }
         }
-        _notifications.value = updated
-        _showNotificationBadge.value = updated.any { !it.isRead }
+    }
+
+    fun markNotificationRead(notificationId: Int) {
+        val name = _driverName.value
+        if (name == "Driver") return
+
+        val notification = _notifications.value.find { it.id == notificationId } ?: return
+        if (notification.dbKey.isEmpty()) return
+
+        viewModelScope.launch {
+            try {
+                db.child("notifications").child(name).child(notification.dbKey).child("isRead").setValue(true).await()
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Error marking read", e)
+            }
+        }
     }
 
     fun clearAllNotifications() {
-        val updated = _notifications.value.map { it.copy(isRead = true) }
-        _notifications.value = updated
-        _showNotificationBadge.value = false
+        val name = _driverName.value
+        if (name == "Driver") return
+        
+        viewModelScope.launch {
+            try {
+                db.child("notifications").child(name).removeValue().await()
+                _notifications.value = emptyList()
+                _showNotificationBadge.value = false
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Error clearing notifications", e)
+            }
+        }
     }
 
     fun addDriverNote(taskId: Int, note: String) {
@@ -209,16 +254,64 @@ class DriverViewModel : ViewModel() {
         _tasks.value = updatedTasks
     }
 
+    fun updateDriverLocation(latLng: LatLng) {
+        _driverLocation.value = latLng
+        // Update driver's location in Firebase for Admin to track
+        val name = _driverName.value
+        if (name != "Driver") {
+            viewModelScope.launch {
+                try {
+                    db.child("drivers").child(name).child("lat").setValue(latLng.latitude)
+                    db.child("drivers").child(name).child("lng").setValue(latLng.longitude)
+                } catch (e: Exception) {
+                    Log.e("DriverViewModel", "Error updating location in DB", e)
+                }
+            }
+        }
+    }
+
+    fun startTaskNavigation(task: PickupTask) {
+        _activeTask.value = task
+        viewModelScope.launch {
+            try {
+                // Update task status in DB to "En Route"
+                if (task.dbKey.isNotEmpty()) {
+                    db.child("assigned_tasks").child(task.dbKey).child("status").setValue("En Route")
+                }
+                
+                // Also update driver status in Firebase
+                val name = _driverName.value
+                if (name != "Driver") {
+                    db.child("drivers").child(name).child("status").setValue("En Route")
+                    db.child("drivers").child(name).child("activeTaskId").setValue(task.dbKey)
+                }
+            } catch (e: Exception) {
+                Log.e("DriverViewModel", "Error starting task navigation", e)
+            }
+        }
+    }
+
     fun markTaskCompleted(taskId: Int) {
         viewModelScope.launch {
             val task = _tasks.value.find { it.id == taskId }
             if (task != null && task.dbKey.isNotEmpty()) {
                 try {
                     db.child("assigned_tasks").child(task.dbKey).child("isCompleted").setValue(true).await()
+                    db.child("assigned_tasks").child(task.dbKey).child("status").setValue("Completed")
+                    
+                    // Update driver status back to Active
+                    val name = _driverName.value
+                    if (name != "Driver") {
+                        db.child("drivers").child(name).child("status").setValue("Active")
+                        db.child("drivers").child(name).child("activeTaskId").setValue("")
+                    }
+                    
+                    if (_activeTask.value?.id == taskId) {
+                        _activeTask.value = null
+                    }
+
                     Log.d("DriverViewModel", "Task ${task.dbKey} marked as completed in DB")
                     
-                    // The ValueEventListener will automatically update the local _tasks list
-                    // but we can also update it immediately for better UX
                     val updatedTasks = _tasks.value.map {
                         if (it.id == taskId) it.copy(isCompleted = true) else it
                     }

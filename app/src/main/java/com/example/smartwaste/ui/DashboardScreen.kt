@@ -189,11 +189,14 @@ fun SmartWasteApp(
                 onBack = { currentScreen = SmartWasteScreen.Home }
             )
             SmartWasteScreen.Tips -> TipsScreen(onBack = { currentScreen = SmartWasteScreen.Home })
-            SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(onLogout = { 
-                authService.logout()
-                currentScreen = SmartWasteScreen.Welcome 
-                onLogoutRequest()
-            })
+            SmartWasteScreen.AdminDashboard -> AdminDashboardScreen(
+                adminEmail = currentUser?.email ?: "admin@smartwaste.com",
+                onLogout = { 
+                    authService.logout()
+                    currentScreen = SmartWasteScreen.Welcome 
+                    onLogoutRequest()
+                }
+            )
         }
     }
 }
@@ -495,9 +498,114 @@ fun HomeScreen(user: User, onReportIssue: () -> Unit, onViewRewards: () -> Unit,
             }
 
             Text("What would you like to do?", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            
+            var showSpecialPickupDialog by remember { mutableStateOf(false) }
+            val scope = rememberCoroutineScope()
+            val context = LocalContext.current
+            
+            if (showSpecialPickupDialog) {
+                var wasteType by remember { mutableStateOf("Bulky Items") }
+                var notes by remember { mutableStateOf("") }
+                var isEmergency by remember { mutableStateOf(false) }
+                var isSubmitting by remember { mutableStateOf(false) }
+                
+                AlertDialog(
+                    onDismissRequest = { if (!isSubmitting) showSpecialPickupDialog = false },
+                    title = { Text("Request Special Pickup") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Waste Type:")
+                            val types = listOf("Bulky Items", "Electronic Waste", "Construction Debris", "Hazardous Waste")
+                            var expanded by remember { mutableStateOf(false) }
+                            Box {
+                                OutlinedTextField(
+                                    value = wasteType,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    modifier = Modifier.fillMaxWidth().clickable { expanded = true },
+                                    trailingIcon = { Icon(Icons.Default.ArrowDropDown, null) },
+                                    enabled = false,
+                                    colors = OutlinedTextFieldDefaults.colors(disabledTextColor = MaterialTheme.colorScheme.onSurface, disabledBorderColor = MaterialTheme.colorScheme.outline)
+                                )
+                                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                    types.forEach { type ->
+                                        DropdownMenuItem(text = { Text(type) }, onClick = { wasteType = type; expanded = false })
+                                    }
+                                }
+                            }
+                            
+                            OutlinedTextField(
+                                value = notes,
+                                onValueChange = { notes = it },
+                                label = { Text("Additional Notes / Context") },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 3
+                            )
+                            
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = isEmergency, onCheckedChange = { isEmergency = it })
+                                Text("Emergency Request", color = if (isEmergency) Color.Red else Color.Unspecified)
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isSubmitting = true
+                                    try {
+                                        val db = FirebaseDatabase.getInstance().reference
+                                        val request = hashMapOf(
+                                            "userEmail" to user.email,
+                                            "issueType" to "Special Pickup",
+                                            "wasteType" to wasteType,
+                                            "description" to notes,
+                                            "priority" to if (isEmergency) "Emergency" else "Normal",
+                                            "timestamp" to System.currentTimeMillis(),
+                                            "status" to "Pending",
+                                            "location" to "User's Address" // In a real app, use geocoder
+                                        )
+                                        db.child("reports").push().setValue(request).await()
+                                        
+                                        // Reward user with 10 Eco Points
+                                        val uid = FirebaseAuthService().getCurrentUser()?.uid
+                                        if (uid != null) {
+                                            val userRef = db.child("users").child(uid)
+                                            userRef.child("ecoPoints").get().addOnSuccessListener { snapshot ->
+                                                val currentPoints = snapshot.getValue(Int::class.java) ?: 0
+                                                userRef.child("ecoPoints").setValue(currentPoints + 10)
+                                            }
+                                        }
+
+                                        Toast.makeText(context, "Special pickup requested! +10 Eco Points earned.", Toast.LENGTH_SHORT).show()
+                                        showSpecialPickupDialog = false
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isSubmitting = false
+                                    }
+                                }
+                            },
+                            enabled = !isSubmitting,
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isEmergency) Color.Red else GreenPrimary)
+                        ) {
+                            if (isSubmitting) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                            else Text("Submit Request")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showSpecialPickupDialog = false }, enabled = !isSubmitting) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ActionCard("Report Waste Issue", "Spotted illegal dumping or overflowing bins? Let us know.", Icons.Default.Report, GreenPrimary, onReportIssue)
-                ActionCard("Request Special Pickup", "Have bulky items? Schedule a custom collection.", Icons.Default.LocalShipping, Color(0xFF2196F3), onViewSchedule)
+                ActionCard("Request Special Pickup", "Have bulky items? Schedule a custom collection.", Icons.Default.LocalShipping, Color(0xFF2196F3)) {
+                    showSpecialPickupDialog = true
+                }
             }
         }
     }
@@ -526,7 +634,6 @@ fun ActionCard(title: String, desc: String, icon: ImageVector, color: Color, onC
     }
 }
 
-@SuppressLint("MissingPermission")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Unit) {
@@ -534,6 +641,7 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
     var location by remember { mutableStateOf("Fetching location...") }
     var latitude by remember { mutableDoubleStateOf(0.0) }
     var longitude by remember { mutableDoubleStateOf(0.0) }
+    var phoneNumber by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
@@ -701,6 +809,17 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
             Text(location, fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 8.dp))
 
             Spacer(Modifier.height(16.dp))
+            Text("Phone Number:", fontWeight = FontWeight.Bold)
+            OutlinedTextField(
+                value = phoneNumber,
+                onValueChange = { phoneNumber = it },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                placeholder = { Text("Enter contact number") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                shape = RoundedCornerShape(8.dp)
+            )
+
+            Spacer(Modifier.height(16.dp))
             Text("Description:", fontWeight = FontWeight.Bold)
             OutlinedTextField(value = description, onValueChange = { description = it }, modifier = Modifier.fillMaxWidth().height(120.dp).padding(vertical = 8.dp), placeholder = { Text("Details...") }, shape = RoundedCornerShape(8.dp))
             Spacer(Modifier.height(32.dp))
@@ -716,11 +835,23 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
                                 "location" to location, 
                                 "latitude" to latitude,
                                 "longitude" to longitude,
+                                "phoneNumber" to phoneNumber,
                                 "description" to description, 
                                 "timestamp" to System.currentTimeMillis(), 
                                 "status" to "Pending"
                             )
                             db.child("reports").push().setValue(report).await()
+                            
+                            // Reward user with 10 Eco Points
+                            val uid = FirebaseAuthService().getCurrentUser()?.uid
+                            if (uid != null) {
+                                val userRef = db.child("users").child(uid)
+                                userRef.child("ecoPoints").get().addOnSuccessListener { snapshot ->
+                                    val currentPoints = snapshot.getValue(Int::class.java) ?: 0
+                                    userRef.child("ecoPoints").setValue(currentPoints + 10)
+                                }
+                            }
+
                             showSuccessDialog = true
                         } catch (e: Exception) {
                             Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -743,9 +874,13 @@ fun ReportIssueScreen(userEmail: String, onBack: () -> Unit, onSubmit: () -> Uni
 fun TipsScreen(onBack: () -> Unit) {
     Scaffold(topBar = { TopAppBar(title = { Text("Eco Tips", color = Color.White) }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = GreenDark)) }) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-            TipCard("Clean your recyclables", "Rinse containers.", Icons.Default.CleaningServices)
-            TipCard("Reduce & Reuse", "Use reusable bags.", Icons.Default.Loop)
-            TipCard("Compost organics", "Fruit peels etc.", Icons.Default.Grass)
+            TipCard("Clean your recyclables", "Rinse containers before putting them in the bin to prevent contamination.", Icons.Default.CleaningServices)
+            TipCard("Reduce & Reuse", "Switch to reusable water bottles and shopping bags to decrease plastic waste.", Icons.Default.Loop)
+            TipCard("Compost organics", "Fruit peels and vegetable scraps can be composted to create nutrient-rich soil.", Icons.Default.Grass)
+            TipCard("E-Waste Disposal", "Never throw batteries or electronics in general waste. Find a dedicated e-waste center.", Icons.Default.ElectricalServices)
+            TipCard("Mindful Shopping", "Buy products with minimal packaging to reduce the amount of waste generated.", Icons.Default.ShoppingBag)
+            TipCard("Water Conservation", "Turn off the tap while brushing teeth to save gallons of water every week.", Icons.Default.WaterDrop)
+            TipCard("Paperless Billing", "Switch to digital statements to save trees and reduce paper clutter.", Icons.Default.Description)
         }
     }
 }
@@ -776,6 +911,9 @@ fun RewardsScreen(ecoPoints: Int, onBack: () -> Unit) {
             BadgeListItem("Eco Starter", "Initial Badge", Icons.Default.Person, Color.Gray, true)
             BadgeListItem("Bronze Badge", "100 Points Required", Icons.Default.MilitaryTech, Color(0xFFCD7F32), ecoPoints >= 100)
             BadgeListItem("Silver Badge", "150 Points Required", Icons.Default.Stars, Color(0xFFC0C0C0), ecoPoints >= 150)
+            BadgeListItem("Gold Badge", "200 Points Required", Icons.Default.EmojiEvents, Color(0xFFFFD700), ecoPoints >= 200)
+            BadgeListItem("Platinum Badge", "250 Points Required", Icons.Default.Diamond, Color(0xFFE5E4E2), ecoPoints >= 250)
+            BadgeListItem("Diamond Badge", "300 Points Required", Icons.Default.WorkspacePremium, Color(0xFFB9F2FF), ecoPoints >= 300)
         }
     }
 }
@@ -836,8 +974,9 @@ fun HistoryScreen(onBack: () -> Unit) {
             else if (reports.isEmpty()) { Text("No reports found.", color = Color.Gray) }
             else { reports.forEach { ReportStatusCard(it) } }
             Spacer(Modifier.height(24.dp))
-            Text("Upcoming Collections", fontWeight = FontWeight.Bold, color = GreenDark)
-            ScheduleItem("Tomorrow, 08:00 AM", "Organic Waste", "Scheduled")
+            Text("Upcoming Events", fontWeight = FontWeight.Bold, color = GreenDark)
+            ScheduleItem("Tomorrow, 08:00 AM", "Organic Waste Collection", "Scheduled")
+            ScheduleItem("Next Friday", "Bulky Item Special Pickup", "Pending Approval")
         }
     }
 }
@@ -858,11 +997,22 @@ fun ReportStatusCard(report: ReportItem) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(report.issueType, fontWeight = FontWeight.Bold)
-                Text(report.status, color = statusColor)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(report.issueType, fontWeight = FontWeight.Bold)
+                    if (report.priority == "Emergency") {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(color = Color.Red, shape = RoundedCornerShape(4.dp)) {
+                            Text("EMERGENCY", color = Color.White, fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                Text(report.status, color = statusColor, fontWeight = FontWeight.Bold)
             }
             Text(report.location, fontSize = 14.sp, color = Color.Gray)
+            if (report.wasteType.isNotEmpty()) {
+                Text("Type: ${report.wasteType}", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = GreenPrimary)
+            }
             Text(report.description, fontSize = 14.sp)
         }
     }

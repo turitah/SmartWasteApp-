@@ -13,7 +13,6 @@ import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -30,39 +29,47 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
 
     private var initialLoadComplete = false
 
-    var drivers by mutableStateOf(
-        listOf(
-            Driver(name = "Niwamanya Joel", truck = "Truck #001", status = "Active", statusColor = Color(0xFF4CAF50), profileImage = "https://randomuser.me/api/portraits/men/32.jpg", assignedBins = "Bin-001, Bin-004"),
-            Driver(name = "Moola Joseph", truck = "Truck #005", status = "On Break", statusColor = Color(0xFFFF9800), profileImage = "https://randomuser.me/api/portraits/women/44.jpg", assignedBins = "Bin-005"),
-            Driver(name = "Okello Peter", truck = "Truck #003", status = "En Route", statusColor = Color(0xFF2196F3), profileImage = "https://randomuser.me/api/portraits/men/46.jpg", assignedBins = "Bin-003"),
-            Driver(name = "Musa Juma", truck = "Truck #008", status = "Offline", statusColor = Color(0xFF9E9E9E), profileImage = "https://randomuser.me/api/portraits/men/86.jpg", assignedBins = "None")
-        )
-    )
+    var drivers by mutableStateOf<List<Driver>>(emptyList())
+    var bins by mutableStateOf<List<BinData>>(emptyList())
+    var schedules by mutableStateOf<List<ScheduleData>>(emptyList())
 
-    var bins by mutableStateOf(
-        listOf(
-            BinData("Bin-001", "Acacia Ave", 85, "John Kato", 0.3340, 32.5930),
-            BinData("Bin-002", "Bugolobi Village", 40, "Sarah Namuli", 0.3180, 32.6180),
-            BinData("Bin-003", "Kiwatule Road", 15, "Peter Okello", 0.3650, 32.6240),
-            BinData("Bin-004", "Ntinda St", 92, "Niwamanya Joel", 0.3540, 32.6120),
-            BinData("Bin-005", "Makerere Main", 60, "Moola Joseph", 0.3320, 32.5700)
-        )
-    )
-
-    var schedules by mutableStateOf(
-        listOf(
-            ScheduleData("Mon, Jan 22", "Morning", "John Kato", "Truck #001"),
-            ScheduleData("Tue, Jan 23", "Afternoon", "Sarah Namuli", "Truck #005"),
-            ScheduleData("Wed, Jan 24", "Morning", "Peter Okello", "Truck #003")
-        )
-    )
-
-    var viewedReportIds by mutableStateOf(prefs.getStringSet("viewed_reports", emptySet()) ?: emptySet())
+    var adminProfileImage by mutableStateOf<String?>(null)
+    var adminNameState by mutableStateOf("Admin")
+    var adminEmailState by mutableStateOf("admin@smartwaste.com")
 
     init {
         listenToReports()
         listenToBins()
         listenToDrivers()
+    }
+
+    fun setAdminEmail(email: String) {
+        if (adminEmailState == email && adminNameState != "Admin") return
+        adminEmailState = email
+        prefs.edit().putString("admin_email", email).apply()
+        loadAdminProfile()
+    }
+
+    private fun loadAdminProfile() {
+        db.child("users").orderByChild("email").equalTo(adminEmailState).limitToFirst(1)
+            .addValueEventListener(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val userDoc = snapshot.children.firstOrNull()
+                    if (userDoc != null) {
+                        adminNameState = userDoc.child("fullName").getValue(String::class.java) ?: "Admin"
+                        adminProfileImage = userDoc.child("profileImage").getValue(String::class.java)
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            })
+    }
+
+    fun updateAdminProfileImage(uri: String) {
+        adminProfileImage = uri
+        db.child("users").orderByChild("email").equalTo(adminEmailState).limitToFirst(1)
+            .get().addOnSuccessListener { snapshot ->
+                snapshot.children.firstOrNull()?.ref?.child("profileImage")?.setValue(uri)
+            }
     }
 
     private fun listenToDrivers() {
@@ -72,21 +79,21 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
                     val driverList = mutableListOf<Driver>()
                     for (doc in snapshot.children) {
                         val name = doc.child("fullName").getValue(String::class.java) ?: "Unknown Driver"
+                        val profileImage = doc.child("profileImage").getValue(String::class.java)
                         driverList.add(
                             Driver(
+                                id = doc.key ?: "",
                                 name = name,
-                                truck = "Truck #00${(1..9).random()}", // In a real app, this would be in the profile
+                                truck = doc.child("truck").getValue(String::class.java) ?: "TBD",
                                 status = "Online",
                                 statusColor = Color(0xFF4CAF50),
-                                profileImage = "https://randomuser.me/api/portraits/men/${(1..99).random()}.jpg",
-                                assignedBins = "None" // This will be calculated below
+                                profileImage = profileImage ?: "https://ui-avatars.com/api/?name=${name.replace(" ", "+")}&background=random",
+                                assignedBins = "None"
                             )
                         )
                     }
-                    if (driverList.isNotEmpty()) {
-                        drivers = driverList
-                        syncDriverAssignments()
-                    }
+                    drivers = driverList
+                    syncDriverAssignments()
                 }
 
                 override fun onCancelled(error: DatabaseError) {}
@@ -103,32 +110,21 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
     private fun listenToBins() {
         db.child("bins").addValueEventListener(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                if (snapshot.childrenCount == 0L) {
-                    // Initialize with default bins if Firebase is empty
-                    val defaultBins = listOf(
-                        BinData("Bin-001", "Acacia Ave", 85, "John Kato", 0.3340, 32.5930),
-                        BinData("Bin-002", "Bugolobi Village", 40, "Sarah Namuli", 0.3180, 32.6180),
-                        BinData("Bin-003", "Kiwatule Road", 15, "Peter Okello", 0.3650, 32.6240),
-                        BinData("Bin-004", "Ntinda St", 92, "Niwamanya Joel", 0.3540, 32.6120),
-                        BinData("Bin-005", "Makerere Main", 60, "Moola Joseph", 0.3320, 32.5700)
-                    )
-                    defaultBins.forEach { addBin(it) }
-                } else {
-                    val binList = mutableListOf<BinData>()
-                    for (doc in snapshot.children) {
-                        binList.add(
-                            BinData(
-                                id = doc.child("id").getValue(String::class.java) ?: "",
-                                location = doc.child("location").getValue(String::class.java) ?: "",
-                                fillLevel = doc.child("fillLevel").getValue(Int::class.java) ?: 0,
-                                assignedDriver = doc.child("assignedDriver").getValue(String::class.java) ?: "Unassigned",
-                                latitude = doc.child("latitude").getValue(Double::class.java) ?: 0.3136,
-                                longitude = doc.child("longitude").getValue(Double::class.java) ?: 32.5811
-                            )
+                val binList = mutableListOf<BinData>()
+                for (doc in snapshot.children) {
+                    binList.add(
+                        BinData(
+                            id = doc.child("id").getValue(String::class.java) ?: "",
+                            location = doc.child("location").getValue(String::class.java) ?: "",
+                            fillLevel = doc.child("fillLevel").getValue(Int::class.java) ?: 0,
+                            assignedDriver = doc.child("assignedDriver").getValue(String::class.java) ?: "Unassigned",
+                            latitude = doc.child("latitude").getValue(Double::class.java) ?: 0.3136,
+                            longitude = doc.child("longitude").getValue(Double::class.java) ?: 32.5811
                         )
-                    }
-                    bins = binList
+                    )
                 }
+                bins = binList
+                syncDriverAssignments()
             }
 
             override fun onCancelled(error: DatabaseError) {}
@@ -174,30 +170,77 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
         })
     }
 
-    fun markAsResolved(reportId: String, notes: String = "") {
+    fun markAsResolved(reportId: String, driverName: String, notes: String = "") {
+        val report = _reports.value.find { it.id == reportId } ?: return
+        
         val updates = mutableMapOf<String, Any>(
-            "status" to "Resolved"
+            "status" to "Resolved",
+            "assignedDriver" to driverName
         )
         if (notes.isNotEmpty()) {
             updates["adminNotes"] = notes
         }
         db.child("reports").child(reportId).updateChildren(updates)
+
+        val taskData = hashMapOf(
+            "driverName" to driverName,
+            "reportId" to reportId,
+            "customerName" to report.userName,
+            "address" to report.location,
+            "wasteType" to report.issueType,
+            "shift" to "Report Resolution",
+            "isCompleted" to false,
+            "timestamp" to System.currentTimeMillis()
+        )
+        db.child("assigned_tasks").push().setValue(taskData)
+
+        val notificationData = hashMapOf(
+            "title" to "New Report Assigned",
+            "message" to "You have been assigned to handle a report: ${report.issueType} at ${report.location}.",
+            "timestamp" to System.currentTimeMillis().toString(),
+            "isRead" to false,
+            "type" to "complaint"
+        )
+        db.child("notifications").child(driverName).push().setValue(notificationData)
     }
 
     fun deleteReport(reportId: String) {
         db.child("reports").child(reportId).removeValue()
     }
 
-    fun addDriver(driver: Driver) {
-        drivers = drivers + driver
+    fun addDriver(name: String, truck: String, imageUri: String?) {
+        // In a real app, this would involve creating a Firebase Auth user
+        // and adding a document to 'users' with role 'driver'.
+        val driverData = hashMapOf(
+            "fullName" to name,
+            "truck" to truck,
+            "role" to "driver",
+            "profileImage" to (imageUri ?: ""),
+            "email" to "${name.lowercase().replace(" ", ".")}@smartwaste.com"
+        )
+        db.child("users").push().setValue(driverData)
     }
 
-    fun updateDriver(oldName: String, updated: Driver) {
-        drivers = drivers.map { if (it.name == oldName) updated else it }
+    fun updateDriver(driverId: String, updated: Driver) {
+        if (driverId.isNotEmpty()) {
+            db.child("users").child(driverId).updateChildren(mapOf(
+                "fullName" to updated.name,
+                "truck" to updated.truck,
+                "profileImage" to updated.profileImage
+            ))
+        }
     }
 
     fun deleteDriver(driver: Driver) {
-        drivers = drivers.filter { it.name != driver.name }
+        if (driver.id.isNotEmpty()) {
+            db.child("users").child(driver.id).removeValue()
+        } else {
+            // Fallback to name search if ID is missing for some reason
+            db.child("users").orderByChild("fullName").equalTo(driver.name).limitToFirst(1)
+                .get().addOnSuccessListener { snapshot ->
+                    snapshot.children.firstOrNull()?.ref?.removeValue()
+                }
+        }
     }
 
     fun addBin(bin: BinData) {
@@ -215,17 +258,10 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
         db.child("bins").child(binId).removeValue()
     }
 
-    fun addSchedule(schedule: ScheduleData) {
-        schedules = schedules + schedule
-    }
-
     fun assignDriverToBin(binId: String, driverName: String) {
-        // 1. Update bin in Firebase
         val bin = bins.find { it.id == binId } ?: return
-        val updatedBin = bin.copy(assignedDriver = driverName)
-        updateBin(binId, updatedBin)
+        db.child("bins").child(binId).child("assignedDriver").setValue(driverName)
 
-        // 2. Create a task in "assigned_tasks" for the Driver to see
         val taskData = hashMapOf(
             "driverName" to driverName,
             "binId" to binId,
@@ -240,7 +276,6 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
         )
         db.child("assigned_tasks").push().setValue(taskData)
 
-        // 3. Send a notification to the driver
         val notificationData = hashMapOf(
             "title" to "New Task Assigned",
             "message" to "You have been assigned to collect bin $binId at ${bin.location}.",
@@ -249,8 +284,20 @@ class AdminViewModel(application: Application) : AndroidViewModel(application) {
             "type" to "new_assignment"
         )
         db.child("notifications").child(driverName).push().setValue(notificationData)
+    }
 
-        // 4. Update local drivers state for immediate UI feedback
-        syncDriverAssignments()
+    fun getDayEvaluation(): String {
+        val totalTasks = bins.size + _reports.value.size
+        val completedBins = bins.count { it.fillLevel < 20 && it.assignedDriver != "Unassigned" }
+        val resolvedReports = _reports.value.count { it.status == "Resolved" }
+        
+        val totalCompleted = completedBins + resolvedReports
+        val percentage = if (totalTasks > 0) (totalCompleted * 100) / totalTasks else 0
+        
+        return when {
+            percentage >= 80 -> "Excellent! Most tasks are being handled efficiently today."
+            percentage >= 50 -> "Good progress. Half of the scheduled tasks are completed."
+            else -> "Busy day ahead! Many tasks are still pending resolution."
+        }
     }
 }

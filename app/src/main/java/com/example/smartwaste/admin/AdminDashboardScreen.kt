@@ -1,6 +1,9 @@
 package com.example.smartwaste.admin
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -40,11 +44,17 @@ enum class AdminSubScreen {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminDashboardScreen(
-    adminName: String = "Admin",
     adminEmail: String = "admin@smartwaste.com",
     onLogout: () -> Unit,
     viewModel: AdminViewModel = viewModel()
 ) {
+    LaunchedEffect(adminEmail) {
+        viewModel.setAdminEmail(adminEmail)
+    }
+
+    val adminName = viewModel.adminNameState
+    val adminProfileImage = viewModel.adminProfileImage
+
     val reports by viewModel.reports.collectAsState()
     val drivers = viewModel.drivers
     val bins = viewModel.bins
@@ -57,6 +67,7 @@ fun AdminDashboardScreen(
     // Dialog states for Manage Drivers
     var showAddDriverDialog by remember { mutableStateOf(false) }
     var driverToEdit by remember { mutableStateOf<Driver?>(null) }
+    var driverToDelete by remember { mutableStateOf<Driver?>(null) }
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -72,6 +83,12 @@ fun AdminDashboardScreen(
         }
     }
 
+    val adminImagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { viewModel.updateAdminProfileImage(it.toString()) }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -83,21 +100,38 @@ fun AdminDashboardScreen(
                         .padding(32.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.2f),
-                            modifier = Modifier.size(80.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Person,
-                                null,
-                                tint = Color.White,
-                                modifier = Modifier.padding(16.dp).size(48.dp)
-                            )
+                        Box(contentAlignment = Alignment.BottomEnd) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White.copy(alpha = 0.2f),
+                                modifier = Modifier.size(90.dp).border(2.dp, Color.White, CircleShape)
+                            ) {
+                                if (adminProfileImage != null) {
+                                    AsyncImage(
+                                        model = adminProfileImage,
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize().clip(CircleShape),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Person,
+                                        null,
+                                        tint = Color.White,
+                                        modifier = Modifier.padding(16.dp).size(48.dp)
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { adminImagePicker.launch("image/*") },
+                                modifier = Modifier.size(32.dp).background(Color.White, CircleShape).padding(4.dp)
+                            ) {
+                                Icon(Icons.Default.CameraAlt, "Edit Profile Image", tint = GreenPrimary, modifier = Modifier.size(16.dp))
+                            }
                         }
                         Spacer(Modifier.height(16.dp))
                         Text(adminName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        Text(adminEmail, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
+                        Text(viewModel.adminEmailState, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -206,10 +240,10 @@ fun AdminDashboardScreen(
         ) { padding ->
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 when (currentSubScreen) {
-                    AdminSubScreen.Dashboard -> DashboardContent(drivers.size, bins.size, unreadReportCount)
+                    AdminSubScreen.Dashboard -> DashboardContent(drivers.size, bins.size, unreadReportCount, viewModel.getDayEvaluation())
                     AdminSubScreen.Drivers -> ManageDriversScreen(
                         drivers = drivers,
-                        onDelete = { viewModel.deleteDriver(it) },
+                        onDelete = { driverToDelete = it },
                         onEdit = { driverToEdit = it }
                     )
                     AdminSubScreen.Reports -> ManageReportsScreen(reports) { selectedReport = it }
@@ -226,8 +260,8 @@ fun AdminDashboardScreen(
     if (showAddDriverDialog) {
         DriverActionDialog(
             onDismiss = { showAddDriverDialog = false },
-            onConfirm = { name, truck ->
-                viewModel.addDriver(Driver(name, truck, "Offline", Color.Gray, "https://randomuser.me/api/portraits/men/${(1..99).random()}.jpg"))
+            onConfirm = { name, truck, image ->
+                viewModel.addDriver(name, truck, image)
                 showAddDriverDialog = false
             }
         )
@@ -237,9 +271,33 @@ fun AdminDashboardScreen(
         DriverActionDialog(
             driver = driver,
             onDismiss = { driverToEdit = null },
-            onConfirm = { name, truck ->
-                viewModel.updateDriver(driver.name, driver.copy(name = name, truck = truck))
+            onConfirm = { name, truck, image ->
+                viewModel.updateDriver(driver.id, driver.copy(name = name, truck = truck, profileImage = image ?: driver.profileImage))
                 driverToEdit = null
+            }
+        )
+    }
+
+    driverToDelete?.let { driver ->
+        AlertDialog(
+            onDismissRequest = { driverToDelete = null },
+            title = { Text("Delete Driver") },
+            text = { Text("Are you sure you want to delete ${driver.name}? This action cannot be undone.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteDriver(driver)
+                        driverToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("Delete", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { driverToDelete = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -247,8 +305,9 @@ fun AdminDashboardScreen(
     selectedReport?.let { report ->
         ReportDetailDialog(
             report = report,
+            drivers = drivers,
             onDismiss = { selectedReport = null },
-            onResolve = { viewModel.markAsResolved(report.id) },
+            onResolve = { driverName, notes -> viewModel.markAsResolved(report.id, driverName, notes) },
             onDelete = { viewModel.deleteReport(report.id) }
         )
     }
@@ -267,7 +326,7 @@ fun AdminDashboardScreen(
 }
 
 @Composable
-fun DashboardContent(driverCount: Int, binCount: Int, reportCount: Int) {
+fun DashboardContent(driverCount: Int, binCount: Int, reportCount: Int, evaluation: String) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -276,6 +335,22 @@ fun DashboardContent(driverCount: Int, binCount: Int, reportCount: Int) {
     ) {
         item {
             Text("Dashboard Overview", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = GreenPrimary.copy(alpha = 0.1f)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Assessment, null, tint = GreenPrimary, modifier = Modifier.size(40.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Daily Evaluation", fontWeight = FontWeight.Bold, color = GreenPrimary)
+                        Text(evaluation, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -374,16 +449,46 @@ fun ManageDriversScreen(
 fun DriverActionDialog(
     driver: Driver? = null,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit
+    onConfirm: (String, String, String?) -> Unit
 ) {
     var name by remember { mutableStateOf(driver?.name ?: "") }
     var truck by remember { mutableStateOf(driver?.truck ?: "") }
+    var selectedImageUri by remember { mutableStateOf<String?>(driver?.profileImage) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { selectedImageUri = it.toString() }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (driver == null) "Add New Driver" else "Edit Driver") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .background(Color.Gray.copy(alpha = 0.2f))
+                        .clickable { imagePicker.launch("image/*") },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (selectedImageUri != null) {
+                        AsyncImage(
+                            model = selectedImageUri,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Icon(Icons.Default.AddAPhoto, "Add Photo", tint = Color.Gray)
+                    }
+                }
+                Text("Tap to ${if (selectedImageUri == null) "add" else "change"} photo", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                
+                Spacer(Modifier.height(8.dp))
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -400,7 +505,7 @@ fun DriverActionDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(name, truck) },
+                onClick = { onConfirm(name, truck, selectedImageUri) },
                 enabled = name.isNotBlank() && truck.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
             ) {
@@ -420,24 +525,40 @@ fun ManageReportsScreen(reports: List<ReportItem>, onReportClick: (ReportItem) -
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(reports) { report ->
+            val cardColor = when {
+                report.priority == "Emergency" -> Color(0xFFFFEBEE)
+                report.status == "Pending" -> Color(0xFFFFF3E0)
+                else -> Color.White
+            }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onReportClick(report) },
                 colors = CardDefaults.cardColors(
-                    containerColor = if (report.status == "Pending") Color(0xFFFFF3E0) else Color.White
+                    containerColor = cardColor
                 ),
                 elevation = CardDefaults.cardElevation(2.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 ListItem(
-                    headlineContent = { Text(report.issueType, fontWeight = FontWeight.Bold) },
+                    headlineContent = { 
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(report.issueType, fontWeight = FontWeight.Bold)
+                            if (report.priority == "Emergency") {
+                                Spacer(Modifier.width(8.dp))
+                                Surface(color = Color.Red, shape = RoundedCornerShape(4.dp)) {
+                                    Text("EMERGENCY", color = Color.White, fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    },
                     supportingContent = { Text("From: ${report.userName} • ${report.location}") },
                     trailingContent = {
                         Badge(containerColor = if (report.status == "Pending") Color.Red else GreenPrimary) {
                             Text(report.status, color = Color.White)
                         }
-                    }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                 )
             }
         }
@@ -564,7 +685,17 @@ fun AdminMapContent(bins: List<BinData>) {
 }
 
 @Composable
-fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onResolve: () -> Unit, onDelete: () -> Unit) {
+fun ReportDetailDialog(
+    report: ReportItem,
+    drivers: List<Driver>,
+    onDismiss: () -> Unit,
+    onResolve: (String, String) -> Unit,
+    onDelete: () -> Unit
+) {
+    var selectedDriver by remember { mutableStateOf("") }
+    var adminNotes by remember { mutableStateOf("") }
+    var showResolveOptions by remember { mutableStateOf(false) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(24.dp),
@@ -574,43 +705,102 @@ fun ReportDetailDialog(report: ReportItem, onDismiss: () -> Unit, onResolve: () 
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (report.priority == "Emergency") {
+                    Surface(color = Color.Red, shape = RoundedCornerShape(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text("EMERGENCY REQUEST", color = Color.White, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp))
+                    }
+                }
                 Text("Reported by: ${report.userName}", fontWeight = FontWeight.SemiBold)
                 Text("Location: ${report.location}")
+                if (report.wasteType.isNotEmpty()) {
+                    Text("Waste Type: ${report.wasteType}", fontWeight = FontWeight.SemiBold, color = GreenPrimary)
+                }
                 Spacer(Modifier.height(8.dp))
                 Text("Description:", fontWeight = FontWeight.SemiBold)
                 Text(report.description.ifEmpty { "No description provided." })
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "Status: ${report.status}",
-                    color = if (report.status == "Pending") Color.Red else GreenPrimary,
-                    fontWeight = FontWeight.Bold
-                )
+                
+                if (report.status == "Pending") {
+                    if (showResolveOptions) {
+                        HorizontalDivider()
+                        Text("Assign to Driver:", fontWeight = FontWeight.SemiBold)
+                        drivers.forEach { driver ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedDriver = driver.name }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = selectedDriver == driver.name, onClick = { selectedDriver = driver.name })
+                                Text(driver.name, modifier = Modifier.padding(start = 8.dp))
+                            }
+                        }
+                        OutlinedTextField(
+                            value = adminNotes,
+                            onValueChange = { adminNotes = it },
+                            label = { Text("Admin Notes (Optional)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text(
+                            "Status: ${report.status}",
+                            color = Color.Red,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    Text(
+                        "Status: ${report.status}",
+                        color = GreenPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (report.adminNotes.isNotEmpty()) {
+                        Text("Admin Notes:", fontWeight = FontWeight.SemiBold)
+                        Text(report.adminNotes)
+                    }
+                }
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (report.status == "Pending") {
-                    Button(
-                        onClick = {
-                            onResolve()
-                            onDismiss()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
-                    ) {
-                        Text("Resolve")
+                    if (!showResolveOptions) {
+                        Button(
+                            onClick = { showResolveOptions = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+                        ) {
+                            Text("Resolve Report")
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                if (selectedDriver.isNotEmpty()) {
+                                    onResolve(selectedDriver, adminNotes)
+                                    onDismiss()
+                                }
+                            },
+                            enabled = selectedDriver.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+                        ) {
+                            Text("Confirm Assignment")
+                        }
                     }
                 }
-                IconButton(onClick = {
-                    onDelete()
-                    onDismiss()
-                }) {
-                    Icon(Icons.Default.Delete, "Delete", tint = Color.Red)
+                
+                if (!showResolveOptions) {
+                    IconButton(onClick = {
+                        onDelete()
+                        onDismiss()
+                    }) {
+                        Icon(Icons.Default.Delete, "Delete", tint = Color.Red)
+                    }
                 }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
+            TextButton(onClick = { if (showResolveOptions) showResolveOptions = false else onDismiss() }) {
+                Text(if (showResolveOptions) "Back" else "Close")
             }
         }
     )

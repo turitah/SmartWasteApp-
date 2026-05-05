@@ -1,6 +1,7 @@
 package com.example.smartwaste.driver
 
 import android.content.Intent
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -42,7 +44,9 @@ import com.google.maps.android.compose.MapType
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.MarkerState
+import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
+import kotlinx.coroutines.delay
 import java.util.Calendar
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -236,6 +240,26 @@ fun DriverDashboardScreen(
         }
     }
 
+    val driverLocation by viewModel.driverLocation.collectAsState()
+    val activeTask by viewModel.activeTask.collectAsState()
+
+    // Location Tracking
+    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    LaunchedEffect(Unit) {
+        while(true) {
+            try {
+                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                    location?.let {
+                        viewModel.updateDriverLocation(LatLng(it.latitude, it.longitude))
+                    }
+                }
+            } catch (e: SecurityException) {
+                Log.e("DriverDashboard", "Location permission missing", e)
+            }
+            delay(10000) // Update every 10 seconds
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -289,15 +313,16 @@ fun DriverDashboardScreen(
             }
 
             // Route Map Preview Card (Visual Route Representation)
-            val nextTask = tasks.find { !it.isCompleted && !it.isMissed }
+            val currentTarget = activeTask ?: tasks.find { !it.isCompleted && !it.isMissed }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp)
-                    .clickable(enabled = nextTask != null) {
-                        nextTask?.let { task ->
-                            val geoUri = "geo:${task.latitude},${task.longitude}?q=${task.latitude},${task.longitude}(${task.customerName})".toUri()
+                    .height(250.dp)
+                    .clickable(enabled = currentTarget != null) {
+                        currentTarget?.let { task ->
+                            val geoUri = "google.navigation:q=${task.latitude},${task.longitude}&mode=d".toUri()
                             val mapIntent = Intent(Intent.ACTION_VIEW, geoUri)
+                            mapIntent.setPackage("com.google.android.apps.maps")
                             context.startActivity(mapIntent)
                         }
                     },
@@ -305,10 +330,18 @@ fun DriverDashboardScreen(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    // Actual Google Map Preview (Lite Mode)
-                    val kampala = LatLng(0.3136, 32.5811)
                     val cameraPositionState = rememberCameraPositionState {
-                        position = CameraPosition.fromLatLngZoom(kampala, 12f)
+                        position = CameraPosition.fromLatLngZoom(
+                            driverLocation ?: LatLng(0.3136, 32.5811), 
+                            14f
+                        )
+                    }
+
+                    // Auto-follow driver location if no active task is selected
+                    LaunchedEffect(driverLocation) {
+                        if (activeTask == null && driverLocation != null) {
+                            cameraPositionState.position = CameraPosition.fromLatLngZoom(driverLocation!!, 14f)
+                        }
                     }
 
                     GoogleMap(
@@ -316,27 +349,46 @@ fun DriverDashboardScreen(
                         cameraPositionState = cameraPositionState,
                         properties = MapProperties(
                             mapType = MapType.NORMAL,
-                            isTrafficEnabled = true, // Shows live traffic lines
-                            isMyLocationEnabled = false
+                            isTrafficEnabled = true,
+                            isMyLocationEnabled = true
                         ),
                         uiSettings = MapUiSettings(
-                            zoomControlsEnabled = false,
-                            scrollGesturesEnabled = false, // Static look
-                            zoomGesturesEnabled = false,
-                            mapToolbarEnabled = false
+                            zoomControlsEnabled = true,
+                            scrollGesturesEnabled = true,
+                            zoomGesturesEnabled = true,
+                            mapToolbarEnabled = true
                         )
                     ) {
-                        // Add markers for all pending tasks
-                        tasks.filter { !it.isCompleted && !it.isMissed }.forEach { task ->
+                        // Driver Marker (Custom if not using isMyLocationEnabled)
+                        driverLocation?.let {
+                            Marker(
+                                state = MarkerState(position = it),
+                                title = "Your Location",
+                                icon = com.google.android.gms.maps.model.BitmapDescriptorFactory.defaultMarker(com.google.android.gms.maps.model.BitmapDescriptorFactory.HUE_AZURE)
+                            )
+                        }
+
+                        // Target Marker
+                        currentTarget?.let { task ->
                             Marker(
                                 state = MarkerState(position = LatLng(task.latitude, task.longitude)),
-                                title = task.customerName,
-                                snippet = task.address
+                                title = "Pickup: ${task.customerName}",
+                                snippet = task.address,
+                                icon = com.google.android.gms.maps.model.BitmapDescriptorFactory.defaultMarker(com.google.android.gms.maps.model.BitmapDescriptorFactory.HUE_RED)
                             )
+                            
+                            // Visual path (straight line for now as we don't have a routing API integrated)
+                            driverLocation?.let { driverLoc ->
+                                Polyline(
+                                    points = listOf(driverLoc, LatLng(task.latitude, task.longitude)),
+                                    color = Color(0xFF2196F3),
+                                    width = 10f
+                                )
+                            }
                         }
                     }
 
-                    // Floating labels like "Optimized Route" and "Heavy Traffic"
+                    // Floating labels
                     Column(modifier = Modifier.padding(12.dp)) {
                         Surface(
                             color = Color.Black.copy(alpha = 0.7f),
@@ -345,7 +397,12 @@ fun DriverDashboardScreen(
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
                                 Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.Green, modifier = Modifier.size(12.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Live Traffic Route", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (activeTask != null) "Navigating to ${activeTask!!.customerName}" else "Live Traffic Map", 
+                                    color = Color.White, 
+                                    fontSize = 10.sp, 
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
@@ -381,8 +438,10 @@ fun DriverDashboardScreen(
                         RouteCard(
                             task = task,
                             onNavigate = { 
-                                val geoUri = "geo:${task.latitude},${task.longitude}?q=${task.latitude},${task.longitude}(${task.customerName})".toUri()
+                                viewModel.startTaskNavigation(task)
+                                val geoUri = "google.navigation:q=${task.latitude},${task.longitude}&mode=d".toUri()
                                 val mapIntent = Intent(Intent.ACTION_VIEW, geoUri)
+                                mapIntent.setPackage("com.google.android.apps.maps")
                                 context.startActivity(mapIntent)
                             },
                             onCall = { callCustomer(task.phoneNumber) },
